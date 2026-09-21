@@ -1,0 +1,51 @@
+// Package cli defines SPARC's command-line contract.
+package cli
+
+import (
+	"fmt"
+	"io"
+)
+
+const helpText = `Usage: sparc <command>
+
+Commands:
+  backup   Back up a Supabase project (not yet available)
+  verify   Verify a backup (not yet available)
+  restore  Restore a backup (not yet available)
+
+Run "sparc <command> --help" for more information when commands become available.
+`
+
+func writeOutput(stdout, stderr io.Writer, output string) int {
+	if _, err := io.WriteString(stdout, output); err != nil {
+		fmt.Fprint(stderr, "sparc: unable to write command output\n")
+		return 1
+	}
+	return 0
+}
+
+// Run executes the command selected by args and returns its process exit code.
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	_ = stdin
+
+	if len(args) == 0 {
+		return writeOutput(stdout, stderr, helpText)
+	}
+	if len(args) > 1 {
+		fmt.Fprint(stderr, "sparc: this command takes no arguments in this scaffold\nRun \"sparc help\" for usage.\n")
+		return 2
+	}
+
+	switch args[0] {
+	case "help", "-h", "--help":
+		return writeOutput(stdout, stderr, helpText)
+	case "version", "--version":
+		return writeOutput(stdout, stderr, "sparc dev\n")
+	case "backup", "verify", "restore":
+		fmt.Fprintf(stderr, "sparc: %s is not available in this scaffold\n", args[0])
+		return 1
+	default:
+		fmt.Fprintf(stderr, "sparc: unknown command %q\nRun \"sparc help\" for usage.\n", args[0])
+		return 2
+	}
+}

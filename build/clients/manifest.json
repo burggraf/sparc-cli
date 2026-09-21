@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "status": "research-only",
+  "payloadApproval": {
+    "approved": false,
+    "message": "No PostgreSQL client payload has been downloaded, inspected, selected, or approved for shipping. This manifest is not an executable inventory."
+  },
+  "researchSourceCandidate": {
+    "postgresqlVersion": "17.11",
+    "sourceURL": "https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.bz2",
+    "sha256": "dd27f2b3c59e73ed14aa3324901242bf69a032a6347805f274e6260322d42979",
+    "provenance": "Official PostgreSQL source directory and SHA-256 sidecar, verified in R02."
+  },
+  "uninspectedControlCandidate": {
+    "name": "EDB PostgreSQL binary archives",
+    "listingURL": "https://www.enterprisedb.com/download-postgresql-binaries",
+    "status": "uninspected control candidate only; no artifact URL, digest, architecture, files, imports, licenses, or redistribution conclusion is recorded"
+  },
+  "platformResearch": [
+    {
+      "platform": "darwin",
+      "architecture": "arm64",
+      "minimumOS": "unverified",
+      "buildRecipe": "unverified",
+      "files": [],
+      "fileInventory": "unverified",
+      "importsAndRuntimeClosure": "unverified",
+      "licensesAndNotices": "unverified",
+      "signing": "unverified",
+      "postSigningDigests": "unverified"
+    },
+    {
+      "platform": "darwin",
+      "architecture": "amd64",
+      "minimumOS": "unverified",
+      "buildRecipe": "unverified",
+      "files": [],
+      "fileInventory": "unverified",
+      "importsAndRuntimeClosure": "unverified",
+      "licensesAndNotices": "unverified",
+      "signing": "unverified",
+      "postSigningDigests": "unverified"
+    },
+    {
+      "platform": "windows",
+      "architecture": "amd64",
+      "minimumOS": "unverified",
+      "buildRecipe": "unverified",
+      "files": [],
+      "fileInventory": "unverified",
+      "importsAndRuntimeClosure": "unverified",
+      "licensesAndNotices": "unverified",
+      "signing": "unverified",
+      "postSigningDigests": "unverified"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+# Secrets and private local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.pass
+*.passfile
+*.pgpass
+.sparc-local/
+.sparc-private/
+config.local.*
+
+# Backup archives and private operation data
+archives/
+backups/
+*.age
+*.sparc
+
+# Tool caches and build outputs
+.sparc-cache/
+tool-cache/
+build/cache/
+build/output/
+dist/
+coverage.out
+*.test
+/experiments/packaging/.smoke-outer-*/
+/sparc
+/sparc.exe
