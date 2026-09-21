@@ -40,14 +40,16 @@ func safeAncestors(path string) bool {
 // This checks POSIX ownership/modes only, not inherited macOS extended ACLs.
 // Effective ACL privacy remains a release gate; do not infer it from these modes.
 func privateFD(fd int, directory bool) bool {
-	var st unix.Stat_t
-	if unix.Fstat(fd, &st) != nil || st.Uid != uint32(os.Getuid()) {
-		return false
-	}
 	if directory {
-		return st.Mode&unix.S_IFMT == unix.S_IFDIR && st.Mode&07777 == 0700 && st.Nlink >= 2
+		var st unix.Stat_t
+		return unix.Fstat(fd, &st) == nil && st.Uid == uint32(os.Getuid()) && st.Mode&unix.S_IFMT == unix.S_IFDIR && st.Mode&07777 == 0700 && st.Nlink >= 2
 	}
-	return st.Mode&unix.S_IFMT == unix.S_IFREG && st.Mode&07777 == 0600 && st.Nlink == 1
+	return privateRegularFD(fd, 0600)
+}
+
+func privateRegularFD(fd int, mode uint16) bool {
+	var st unix.Stat_t
+	return unix.Fstat(fd, &st) == nil && st.Uid == uint32(os.Getuid()) && st.Mode&unix.S_IFMT == unix.S_IFREG && st.Mode&07777 == mode && st.Nlink == 1
 }
 
 func CreatePrivateDir(path string) error {
@@ -75,6 +77,71 @@ func CheckPrivateDir(path string) error {
 		return ErrPrivateStorage
 	}
 	return nil
+}
+
+func createPrivatePayloadFile(path string) (*os.File, error) {
+	return openPrivateFile(path, true)
+}
+
+func openPrivatePayloadFile(path string, executable bool) (*os.File, error) {
+	if !safeAncestors(path) {
+		return nil, ErrPrivateStorage
+	}
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, ErrPrivateStorage
+	}
+	mode := uint16(0600)
+	if executable {
+		mode = 0700
+	}
+	if !privateRegularFD(fd, mode) {
+		_ = unix.Close(fd)
+		return nil, ErrPrivateStorage
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
+func sealPrivateExecutable(file *os.File) error {
+	return sealPrivateExecutableWith(file, (*os.File).Sync)
+}
+
+func sealPrivateExecutableWith(file *os.File, sync func(*os.File) error) error {
+	fd := int(file.Fd())
+	if !privateRegularFD(fd, 0600) || unix.Fchmod(fd, 0700) != nil || sync(file) != nil || !privateRegularFD(fd, 0700) {
+		return ErrPrivateStorage
+	}
+	return nil
+}
+
+func localPrivateParentWith(path string, statfs func(int, *unix.Statfs_t) error, close func(int) error) bool {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	valid := privateFD(fd, true)
+	var filesystem unix.Statfs_t
+	statErr := statfs(fd, &filesystem)
+	closeErr := close(fd)
+	return valid && statErr == nil && filesystem.Flags&unix.MNT_LOCAL != 0 && closeErr == nil
+}
+
+func publishPrivateDir(staging, destination string) (bool, error) {
+	return publishPrivateDirDarwinWith(staging, destination, unix.Fstatfs, unix.Close, unix.RenamexNp)
+}
+
+func publishPrivateDirDarwinWith(staging, destination string, statfs func(int, *unix.Statfs_t) error, close func(int) error, rename func(string, string, uint32) error) (bool, error) {
+	if !localPrivateParentWith(filepath.Dir(staging), statfs, close) {
+		return false, ErrPrivateStorage
+	}
+	err := rename(staging, destination, unix.RENAME_EXCL)
+	if err == unix.EEXIST {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func openPrivateFile(path string, write bool) (*os.File, error) {

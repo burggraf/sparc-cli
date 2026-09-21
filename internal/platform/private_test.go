@@ -3,6 +3,8 @@ package platform
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,5 +160,199 @@ func TestPrivateStorageMissingErrorsDoNotDisclosePaths(t *testing.T) {
 	fixedError(t, err)
 	if data != nil || strings.Contains(err.Error(), "secret-canary") {
 		t.Fatal("path/data disclosed")
+	}
+}
+
+func TestPrivatePayloadFileCreationAndOpen(t *testing.T) {
+	root := testRoot(t)
+	path := filepath.Join(root, "payload")
+	file, err := CreatePrivateFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("synthetic")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreatePrivateFile(path); err != ErrPrivateStorage {
+		t.Fatalf("exclusive create error = %v", err)
+	}
+	opened, err := OpenPrivatePayloadFile(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(opened)
+	closeErr := opened.Close()
+	if err != nil || closeErr != nil || string(got) != "synthetic" {
+		t.Fatalf("payload read = %q, %v, close %v", got, err, closeErr)
+	}
+	link := filepath.Join(root, "hard-link")
+	if err := os.Link(path, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{path, link} {
+		if opened, err := OpenPrivatePayloadFile(candidate, false); err != ErrPrivateStorage || opened != nil {
+			t.Fatalf("hard-linked payload opened: %v", err)
+		}
+	}
+}
+
+func TestPrivateFileInjectedWriteAndCloseFailures(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+	path := filepath.Join(root, "write-failure")
+	fixedError(t, writePrivateFileWith(path, []byte("value"), func(*os.File, []byte) (int, error) {
+		return 0, errors.New("secret-canary")
+	}, (*os.File).Close))
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatal("failed write left file")
+	}
+
+	path = filepath.Join(root, "close-failure")
+	fixedError(t, writePrivateFileWith(path, []byte("value"), (*os.File).Write, func(file *os.File) error {
+		_ = file.Close()
+		return errors.New("secret-canary")
+	}))
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatal("failed close left file")
+	}
+}
+
+func TestPrivatePublishNoReplace(t *testing.T) {
+	parent := testRoot(t)
+	staging := filepath.Join(parent, "staging")
+	destination := filepath.Join(parent, "published")
+	if err := CreatePrivateDir(staging); err != nil {
+		t.Fatal(err)
+	}
+	published, err := PublishPrivateDir(staging, destination)
+	if err != nil || !published {
+		t.Fatalf("PublishPrivateDir() = %v, %v", published, err)
+	}
+	if _, err := os.Lstat(staging); !os.IsNotExist(err) {
+		t.Fatal("published source remains")
+	}
+	if err := CheckPrivateDir(destination); err != nil {
+		t.Fatal(err)
+	}
+
+	loser := filepath.Join(parent, "loser")
+	if err := CreatePrivateDir(loser); err != nil {
+		t.Fatal(err)
+	}
+	published, err = PublishPrivateDir(loser, destination)
+	if err != nil || published {
+		t.Fatalf("collision = %v, %v", published, err)
+	}
+	if err := CheckPrivateDir(loser); err != nil {
+		t.Fatal("collision removed loser")
+	}
+	if err := CheckPrivateDir(destination); err != nil {
+		t.Fatal("collision altered winner")
+	}
+
+	// Collision does not inspect, repair, replace, or delete an invalid winner.
+	invalidWinner := filepath.Join(parent, "invalid-winner")
+	if err := os.WriteFile(invalidWinner, []byte("unchanged"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	secondLoser := filepath.Join(parent, "second-loser")
+	if err := CreatePrivateDir(secondLoser); err != nil {
+		t.Fatal(err)
+	}
+	published, err = PublishPrivateDir(secondLoser, invalidWinner)
+	if err != nil || published {
+		t.Fatalf("invalid-winner collision = %v, %v", published, err)
+	}
+	got, err := os.ReadFile(invalidWinner)
+	if err != nil || string(got) != "unchanged" {
+		t.Fatal("collision inspected or altered invalid winner")
+	}
+	if err := CheckPrivateDir(secondLoser); err != nil {
+		t.Fatal("collision removed second loser")
+	}
+}
+
+func TestPrivatePublishRejectsInvalidBoundaries(t *testing.T) {
+	parent := testRoot(t)
+	other := testRoot(t)
+	staging := filepath.Join(parent, "staging")
+	if err := CreatePrivateDir(staging); err != nil {
+		t.Fatal(err)
+	}
+	for _, destination := range []string{staging, filepath.Join(other, "destination"), filepath.Join(parent, "..", "escape"), "relative"} {
+		published, err := PublishPrivateDir(staging, destination)
+		if published {
+			t.Fatalf("published invalid destination %q", destination)
+		}
+		fixedError(t, err)
+	}
+	file := filepath.Join(parent, "file")
+	if err := WritePrivateFile(file, nil); err != nil {
+		t.Fatal(err)
+	}
+	published, err := PublishPrivateDir(file, filepath.Join(parent, "file-destination"))
+	if published {
+		t.Fatal("published regular file as directory")
+	}
+	fixedError(t, err)
+}
+
+func TestPrivatePublishConcurrentOneWinner(t *testing.T) {
+	parent := testRoot(t)
+	destination := filepath.Join(parent, "published")
+	const contenders = 8
+	staging := make([]string, contenders)
+	for i := range staging {
+		staging[i] = filepath.Join(parent, fmt.Sprintf("staging-%d", i))
+		if err := CreatePrivateDir(staging[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var winners atomic.Int32
+	var wg sync.WaitGroup
+	for _, path := range staging {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			published, err := PublishPrivateDir(path, destination)
+			if err != nil {
+				t.Errorf("publish error: %v", err)
+			} else if published {
+				winners.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if winners.Load() != 1 {
+		t.Fatalf("winners = %d", winners.Load())
+	}
+	if err := CheckPrivateDir(destination); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrivatePublishInjectedFailure(t *testing.T) {
+	t.Parallel()
+	parent := testRoot(t)
+	staging := filepath.Join(parent, "staging")
+	destination := filepath.Join(parent, "published")
+	if err := CreatePrivateDir(staging); err != nil {
+		t.Fatal(err)
+	}
+	published, err := publishPrivateDirWith(staging, destination, func(string, string) (bool, error) {
+		return false, errors.New("secret-canary")
+	})
+	if published {
+		t.Fatal("injected failure published")
+	}
+	fixedError(t, err)
+	if err := CheckPrivateDir(staging); err != nil {
+		t.Fatal("injected failure removed staging")
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatal("injected failure created destination")
 	}
 }

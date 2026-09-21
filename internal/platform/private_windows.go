@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -228,6 +229,45 @@ func CheckPrivateDir(path string) error {
 		return ErrPrivateStorage
 	}
 	return nil
+}
+
+func createPrivatePayloadFile(path string) (*os.File, error) {
+	return openPrivateFile(path, true)
+}
+
+func openPrivatePayloadFile(path string, _ bool) (*os.File, error) {
+	return openPrivateFile(path, false)
+}
+
+func sealPrivateExecutable(file *os.File) error {
+	return sealPrivateExecutableWith(file, (*os.File).Sync)
+}
+
+func sealPrivateExecutableWith(file *os.File, sync func(*os.File) error) error {
+	handle := windows.Handle(file.Fd())
+	if !diskObject(handle, false, true) || !safeDACL(handle, true) || sync(file) != nil || !diskObject(handle, false, true) || !safeDACL(handle, true) {
+		return ErrPrivateStorage
+	}
+	return nil
+}
+
+func publishPrivateDir(staging, destination string) (bool, error) {
+	from, err := windows.UTF16PtrFromString(staging)
+	if err != nil {
+		return false, err
+	}
+	to, err := windows.UTF16PtrFromString(destination)
+	if err != nil {
+		return false, err
+	}
+	err = windows.MoveFile(from, to)
+	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) || errors.Is(err, windows.ERROR_FILE_EXISTS) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func openPrivateFile(path string, write bool) (*os.File, error) {

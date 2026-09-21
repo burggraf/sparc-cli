@@ -120,6 +120,14 @@ func TestPrivateWindowsRejectsReparsePoints(t *testing.T) {
 	_, err = ReadPrivateFile(filelink, 100)
 	fixedError(t, err)
 	fixedError(t, WritePrivateFile(filelink, nil))
+	if opened, err := OpenPrivatePayloadFile(filelink, false); err != ErrPrivateStorage || opened != nil {
+		t.Fatalf("payload reparse point opened: %v", err)
+	}
+	published, err := PublishPrivateDir(link, filepath.Join(root, "published-link"))
+	if published {
+		t.Fatal("published reparse directory")
+	}
+	fixedError(t, err)
 }
 
 func TestPrivateWindowsCreationDoesNotInheritBroadReadEntries(t *testing.T) {
@@ -156,6 +164,78 @@ func TestPrivateWindowsRejectsNullDACL(t *testing.T) {
 	}
 	_, err := ReadPrivateFile(path, 100)
 	fixedError(t, err)
+}
+
+func TestPrivateWindowsPayloadDACLAndExecutableIntent(t *testing.T) {
+	root := testRoot(t)
+	path := filepath.Join(root, "tool.exe")
+	file, err := CreatePrivateFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("synthetic")); err != nil {
+		t.Fatal(err)
+	}
+	if err := SealPrivateExecutable(file); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Windows execute intent is manifest metadata; chmod is not a DACL claim.
+	if err := os.Chmod(path, 0777); err != nil {
+		t.Fatal(err)
+	}
+	for _, executable := range []bool{false, true} {
+		opened, err := OpenPrivatePayloadFile(path, executable)
+		if err != nil {
+			t.Fatalf("open executable=%v: %v", executable, err)
+		}
+		if err := opened.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := windows.SecurityDescriptorFromString("O:" + user.User.Sid.String() + "D:P(A;;FA;;;" + user.User.Sid.String() + ")(A;;FA;;;SY)")
+	if err != nil || sd.String() != want.String() {
+		t.Fatalf("payload security descriptor = %s, want %s (%v)", sd.String(), want.String(), err)
+	}
+	setTestDACL(t, path, "D:P(A;;FA;;;WD)")
+	if opened, err := OpenPrivatePayloadFile(path, true); err != ErrPrivateStorage || opened != nil {
+		t.Fatalf("broad DACL accepted: %v", err)
+	}
+}
+
+func TestPrivateWindowsPublishRejectsBroadDACL(t *testing.T) {
+	parent := testRoot(t)
+	staging := filepath.Join(parent, "staging")
+	if err := CreatePrivateDir(staging); err != nil {
+		t.Fatal(err)
+	}
+	setTestDACL(t, staging, "D:P(A;;FA;;;WD)")
+	published, err := PublishPrivateDir(staging, filepath.Join(parent, "published"))
+	if published {
+		t.Fatal("published broad-DACL source")
+	}
+	fixedError(t, err)
+}
+
+func TestPrivateWindowsPayloadSyncFailure(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+	file, err := CreatePrivateFile(filepath.Join(root, "tool.exe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	fixedError(t, sealPrivateExecutableWith(file, func(*os.File) error { return windows.ERROR_WRITE_FAULT }))
 }
 
 func TestPrivateWindowsLocationsHaveNoSideEffects(t *testing.T) {

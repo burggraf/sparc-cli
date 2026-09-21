@@ -511,3 +511,66 @@ validation changes and pinning the synthetic package ID to
 `3e76db2acc8ac60d86de52653e491624f38a2a114eb198769a18c7688d0c764e`.
 Direct identity checks cover rejected schema version, PostgreSQL major, target OS,
 and file mode changes while confirming validated `packageID` rejection.
+
+## Task 05, private payload storage slice — implementation candidate (Task 2)
+
+Extended `internal/platform` with exclusive streaming private-file creation,
+validated payload reopening, descriptor-based executable sealing, and atomic
+no-replace sibling-directory publication. Existing credential/data APIs retain
+their exact `0600` semantics and fixed non-wrapping error contract.
+
+On macOS, payload files start at `0600`; executable sealing validates the open
+owner/type/single-link descriptor, changes that descriptor to exact `0700`,
+syncs it, and validates again. Data and executable opens require exact `0600`
+and `0700` respectively, so the legacy reader refuses executable payloads.
+Publication opens the already-qualified private parent no-follow as a directory,
+validates that descriptor, requires `fstatfs` to report `MNT_LOCAL`, treats close
+failure as fatal, and only then uses `renamex_np(RENAME_EXCL)` with no copy or
+replacement fallback.
+
+On Windows, file creation retains the existing protected current-user+SYSTEM
+DACL from the first handle. Payload opening and sealing validate disk type,
+single link, reparse absence, owner, and exact DACL; executable intent remains
+manifest metadata rather than a chmod claim. Publication uses no-replace
+`MoveFileW` between validated siblings. Native Windows behavior remains a runtime
+qualification gate; cross-compilation is not DACL/reparse/rename proof.
+
+### Observed RED → GREEN
+
+All Go commands used `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOWORK=off
+GOENV=off GOTELEMETRY=off`.
+
+- RED: focused private-payload/publication tests failed to compile after the new
+  API, streaming, mode/DACL, collision, concurrency, injected-failure, hard-link,
+  symlink/reparse, and unsafe-boundary cases were written.
+- GREEN: the focused platform suite passed after adding the minimal common and
+  native implementations. Additional native fixtures independently inspect
+  Darwin modes and Windows security descriptors instead of trusting validators.
+
+Fresh guarded verification passed: `go mod verify`; 21 top-level platform tests
+executed natively on macOS arm64 (including the common and Darwin-specific
+coverage); platform race tests; the full repository suite; full vet;
+formatting/diff checks; and compile-only Windows AMD64 plus Darwin AMD64 platform
+test binaries and vet. Windows-specific DACL/reparse/no-replace tests were not
+executed here. Temporary binaries were isolated under `/tmp` and removed.
+Legacy `WritePrivateFile` tests retain narrow write/close failure injection; this
+slice injects executable sync and publication failures. Every deterministic fault
+is passed to an unexported per-call `...With` helper; production entry points call
+direct native/file operations and there are no mutable package-global function
+hooks. The fault tests run safely in parallel under the race detector. Streaming
+payload write/close failure ownership is deferred to Task 3 extraction tests.
+Concurrent publishers produce exactly one winner; collisions leave both the
+losing staging directory and even an invalid existing winner untouched.
+
+A follow-up RED test failed to compile before the Darwin filesystem-qualification
+seams existed. GREEN proves a synthetic non-local `fstatfs` result and a parent
+handle close failure both return exact `ErrPrivateStorage`, leave staging and
+absent destination unchanged, and therefore do not reach rename. A second RED
+failed after tests switched from shared hooks to missing per-call helpers; GREEN
+passed after the production paths were made direct and only the narrow helpers
+accepted injected write/close/sync/statfs/fd-close/publication functions.
+
+No extraction, process execution, payload bytes, dependency, operational command,
+network/hosted access, installation, commit, or push was added. macOS extended
+ACL qualification and native Windows DACL/reparse/no-replace execution remain
+open gates inherited from Task 04/this slice.
