@@ -352,3 +352,82 @@ reparse and second-user behavior likewise remain unexecuted runtime gates;
 cross-compilation is not proof. The native reparse test deliberately fails, rather
 than skips, if its Windows runner lacks symlink privilege. This slice and Task 04
 remain incompletely qualified, pending these gates and independent review.
+
+## Task 04, config and credential slice — implementation candidate (Tasks 4–5)
+
+Added `internal/credentials` explicit environment/private-file references and
+bounded hidden-terminal input, plus `internal/config` strict private-file v1
+profile loading. No operational CLI path, save/migration API, credential-store
+persistence, dependency update, or plaintext fallback was added. The pinned
+`x/term` already implements native mode handling, so this slice reuses it directly
+instead of adding redundant Darwin/Windows wrappers.
+
+Supervisor-approved details: names/project refs are bounded to 256 UTF-8 bytes,
+destinations/file refs to 4096, environment names to 128 ASCII grammar bytes, and
+profiles to 0–32 entries. Present metadata is nonblank; secret spaces remain
+unchanged. Hierarchical URI-looking destinations reject userinfo/parse errors,
+while local `%`/`@`/Windows-drive paths remain inert metadata. Config key-presence
+checks reject two reference keys even if one value is empty. Hidden input drains
+an overlong/ASCII-invalid line through Enter, ignoring later cancellation/editing
+bytes, before restoring mode and returning input failure; ordinary Ctrl-C/D on
+an otherwise valid line returns the fixed cancellation sentinel.
+
+### Observed RED → GREEN
+
+All Go commands use `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOWORK=off`.
+
+- RED: `go test ./internal/credentials -count=1` failed to build after the
+  input/reference/terminal/error tests were written, before implementation.
+- GREEN: the focused credential suite passed after implementation and correcting
+  a test fixture that accidentally described an allowed single CRLF terminator.
+- RED: `go test ./internal/config -count=1` failed to build after strict schema,
+  duplicate/type/Unicode/bound/redaction tests were written, before implementation.
+- GREEN: the focused config suite passed after the schema-specific parser was added.
+- RED: added U+2028/U+2029 newline/paragraph regressions failed against both initial
+  validators. GREEN: both passed after rejecting those separators explicitly.
+- RED: overlong/invalid-line cancellation regressions failed against immediate
+  Ctrl-C/D handling. GREEN: they passed after making drain state ignore those
+  bytes through Enter; fixed-output and restoration checks also passed.
+
+### Verification and remaining gates
+
+- Focused new-package tests, full offline suite, new-package race tests, and
+  `go vet ./...` passed.
+- Native CLI build, separate Windows AMD64 test compilation for each new package,
+  Windows vet for both packages, and Windows CLI build passed. Temporary build
+  outputs were removed.
+- `gofmt` and `git diff --check` passed; no staged files, commits, or pushes.
+- Canary checks exercise fixed/non-wrapping failures through nested formatting,
+  logging, and JSON error envelopes. Pipe/non-TTY tests prove refusal without
+  consuming input; explicit-source failures do not prompt or fall back.
+
+Terminal parser and injected raw-mode tests are not native console qualification.
+Native macOS/Windows echo, Unicode, console cancellation, and abnormal termination
+remain open gates. macOS extended ACL protection and Windows native DACL/reparse/
+second-user checks remain the previously recorded security blockers, including
+for config and credential-file reads. No real credentials, network requests,
+downloads, installations, or hosted services were used. Independent review remains
+required before this slice is accepted or merged.
+
+### Final P2 follow-up — restore terminal before final output
+
+`readHidden` now restores terminal state immediately after its read attempt,
+before emitting the final newline. A deferred fallback handles early exits and
+unsuccessful immediate restoration; successful immediate restoration is not
+repeated. Any immediate restoration failure discards the input, suppresses the
+newline, and remains `ErrInput` even if the fallback subsequently succeeds.
+
+RED: event-order regressions and the updated restoration-failure output assertion
+failed against the prior newline-before-restore implementation. GREEN: focused
+hidden-input tests passed after the correction. The event checks observe file
+position to prove prompt-before-read and completed-read-before-restore, followed
+by restore-before-newline. They also cover prompt/read/newline failures,
+cancellation, successful fallback, failed fallback, and no redundant restore.
+These remain injected-mode tests, not native console qualification.
+
+Fresh guarded verification (`GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOWORK=off`):
+focused hidden-input tests, full suite, credentials/config race tests, full vet,
+and separate Windows AMD64 credentials/config test compilation and vet passed.
+Temporary compilation outputs were removed. Formatting and diff checks passed;
+no files staged, no network access, and no commits or pushes. Existing native
+console and filesystem-security qualification gates remain open.
