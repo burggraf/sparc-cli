@@ -107,3 +107,191 @@ observations are pending. PostgreSQL/EDB file inventories, imports, licenses,
 minimum OS, signed digests, native TLS dump/restore, macOS trusted-notary
 behavior, and Windows trust behavior need separate owner approval. Adjacent
 tools remain control/fallback only and require owner approval before selection.
+
+## Task 03 — Support profile and coverage report contract
+
+**Status:** complete for the offline contract and research/profile documentation
+(working tree, uncommitted). This is a qualification target only; it makes no hosted,
+payload, or historical recovery-success claim.
+
+**Scope:** Added a JSON-ready operation report with distinct observation, read permission,
+capture, byte integrity, recovery prerequisite, restore, behavior-verification, and
+structured/manual requirement-ID fields. Validation rejects unknown states and duplicate or
+empty component IDs, requires reasons for `not_used`/excluded components, and derives a non-success summary from
+all component gates. No backup/restore engine or manual-recovery structure was added.
+
+### TDD evidence
+
+1. **Red:** After writing `internal/operation/report_test.go` and before
+   `internal/operation/report.go` existed, `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/operation -run TestReport -count=1 -v` exited 1 with a package build failure (the report contract types and `Report` methods were undefined).
+2. **Green:** After the minimal report contract, `gofmt -w internal/operation/report.go internal/operation/report_test.go && GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/operation -run TestReport -count=1 -v` passed 20 tests. The table-driven cases prevent a complete/success summary for `unknown`, `permission_denied`, `unsupported`, `partially_captured`, `manual_required`, `missing_critical_material`, `failed`, and `inconclusive`; a separate test prevents permission denial being relabeled `not_used`.
+
+### Profile and coverage decisions
+
+- Initial database qualification target: PostgreSQL 17 source, target, and client matching
+  major only; direct or qualified session-pooler routes only; transaction pooler blocked.
+  The PG17 client payload is not selected (R02), and R03/R04/R05 remain open.
+- Ordinary provider-owned `public` is a required hosted-support gate. Real Auth, standard
+  Storage ownership, dependency-complete Function packages, and Vault when detected are
+  product gates. Vector/Iceberg/external specialty features are unsupported only with
+  reliable detection and explicit incomplete/refusal behavior.
+- `docs/coverage.md` maps every product inventory family to required, manual, unsupported,
+  or detect-and-block handling and names its Rxx blocker. `docs/compatibility.md` and
+  `docs/research/R04-database-route.md` distinguish qualification targets from support.
+
+### Validation
+
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./... -count=1` — passed (3 packages).
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go vet ./...` — passed.
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go build -o /tmp/sparc-task03 ./cmd/sparc` — passed; temporary binary removed.
+- `GOOS=windows GOARCH=amd64 GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -c -o /tmp/sparc-operation-windows.test.exe ./internal/operation` — passed; temporary binary removed.
+- `gofmt -d internal/operation/report.go internal/operation/report_test.go` and `git diff --check` — no output. `git status --porcelain=v1` showed only the six Task 03 paths; `git diff --cached --name-status` was empty. A scan found no key, `.env`, archive, or certificate artifacts.
+
+No hosted services, downloads, installations, commits, or payloads were used.
+
+### Next approved work
+
+Finish Task 02 gates or proceed only according to the approved plan; R03–R15 remain
+research blockers for service behavior.
+
+### Task 03 follow-up — independent coverage/restore and UTF-8 report IDs
+
+**Status:** complete for the offline report contract correction (working tree,
+uncommitted). No backup/restore operation engine was added.
+
+#### TDD evidence
+
+1. **Red:** After adding the independent coverage/restore, unsupported absence, UTF-8, and
+   JSON identity tests but before changing `report.go`,
+   `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/operation -run 'TestReportSummarySeparatesCoverageAndRestore|TestReportUnsupportedAndDetectComponentsRemainExplicit|TestReportValidateRejectsInvalidUTF8IDsAndReason|TestReportJSONRoundTripPreservesIDs' -count=1 -v`
+   failed: 3 tests passed and 15 failed. The prior summary coupled coverage to restore and
+   behavior, accepted invalid UTF-8, and blocked reliably absent unsupported components.
+2. **Green:** After the minimal summary/validation correction, the same guarded focused
+   command passed 17 tests. The final guarded
+   `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/operation -run TestReport -count=1 -v`
+   passed 38 tests.
+
+#### Contract correction
+
+Coverage now derives only from observation, read permission, capture, byte integrity, and
+recovery prerequisites. Restore derives separately: untouched/absent components yield
+`not_run`; complete capture plus later restore failure remains coverage-complete and restore
+`failed`; mixed work is `blocked`; sampled/inconclusive behavior is `inconclusive`.
+Reliably absent unsupported/detect-and-block components use the complete `not_used` tuple
+with a reason and do not block coverage. Observed, unknown, denied, or otherwise non-absent
+cases remain explicit incomplete/blocked. Explicit exclusions require a reason and remain
+conservatively coverage-incomplete/restore-blocked. Component IDs, requirement IDs, and
+non-secret reasons reject invalid UTF-8 before duplicate identity checks; JSON round-trip
+coverage proves valid IDs retain identity.
+
+#### Follow-up validation
+
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./... -count=1` — passed (3 packages).
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go vet ./...` — passed.
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go build -o /tmp/sparc-task03-followup ./cmd/sparc` — passed; temporary binary removed.
+- `GOOS=windows GOARCH=amd64 GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -c -o /tmp/sparc-operation-followup-windows.test.exe ./internal/operation` — passed; temporary binary removed.
+- `gofmt -d internal/operation/report.go internal/operation/report_test.go` and `git diff --check` — no output. `git diff --cached --name-status` was empty; status contained only the six Task 03 paths. A secret/artifact scan found no `.env`, key, certificate, or archive files.
+
+No hosted services, downloads, installations, commits, or payloads were used.
+
+### Task 03 follow-up — pre-restore capture/integrity outcome
+
+**Status:** complete for the offline summary correction (working tree, uncommitted).
+
+#### TDD evidence
+
+1. **Red:** After adding three no-restore cases (capture failed, integrity failed, and
+   integrity inconclusive) to `TestReportSummarySeparatesCoverageAndRestore` and before
+   changing summary derivation,
+   `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/operation -run TestReportSummarySeparatesCoverageAndRestore -count=1 -v`
+   failed: 6 tests passed and 7 failed. Capture/integrity states were incorrectly treated
+   as restore failures or restore inconclusive even though restore was `not_attempted`.
+2. **Green:** After limiting restore failure to `RestoreFailed`/behavior failure and restore
+   inconclusive to sampled/inconclusive behavior, the guarded focused command passed 12
+   tests; the subsequent guarded
+   `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/operation -run TestReport -count=1 -v`
+   passed 41 tests.
+
+Capture and byte integrity now affect only coverage. When coverage is incomplete before a
+restore starts, restore is `blocked`; actual restore/behavior evidence alone yields
+`failed` or `inconclusive`.
+
+#### Follow-up validation
+
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./... -count=1` — passed (3 packages).
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go vet ./...` — passed.
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go build -o /tmp/sparc-task03-restore-outcome ./cmd/sparc` — passed; temporary binary removed.
+- `GOOS=windows GOARCH=amd64 GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -c -o /tmp/sparc-operation-restore-outcome-windows.test.exe ./internal/operation` — passed; temporary binary removed.
+- `gofmt -d internal/operation/report.go internal/operation/report_test.go` and `git diff --check` — no output. `git diff --cached --name-status` was empty; status contained only the six Task 03 paths. A secret/artifact scan found no `.env`, key, certificate, or archive files.
+
+No hosted services, downloads, installations, commits, or payloads were used.
+
+### Task 03 follow-up — restore precedence, coherence, and reason codes
+
+**Status:** complete for the offline report-contract correction (working tree,
+uncommitted). No operation engine or dependency was added.
+
+#### TDD evidence
+
+1. **Red:** After adding restore-precedence, coherence, typed-reason, and exact JSON-shape
+   tests but before implementation,
+   `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/operation -run 'TestReportRestorePrecedence|TestReportValidateCoherence|TestReportValidateReasonCodes|TestReportJSONV1Shape' -count=1 -v`
+   exited 1 with a package build failure because the new `NotUsedReason` type/codes did not
+   exist. The added tests also specify the prior precedence defect: sampled behavior must
+   not outrank incomplete coverage or untouched components.
+2. **Green:** After the minimal contract changes, the same guarded focused command passed
+   27 tests. `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/operation -run TestReport -count=1 -v`
+   passed 64 tests.
+
+Restore failure/behavior failure now has highest precedence; incomplete coverage is blocked
+before sampled/inconclusive behavior is considered; all applicable components must be
+restored before behavior determines inconclusive/success. Direct validation rejects the
+specified observation/integrity/restore/behavior contradictions. `not_used_reason` is now
+the allowlisted `NotUsedReason` JSON code (`feature_not_observed` or
+`outside_declared_scope`), never free-form public text. The v1 JSON test semantically
+compares complete decoded shapes and verifies empty optional requirement/reason fields are
+omitted; Unicode ID round-trip remains separately tested.
+
+#### Follow-up validation
+
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./... -count=1` — passed (3 packages).
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go vet ./...` — passed.
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go build -o /tmp/sparc-task03-quality ./cmd/sparc` — passed; temporary binary removed.
+- `GOOS=windows GOARCH=amd64 GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -c -o /tmp/sparc-operation-quality-windows.test.exe ./internal/operation` — passed; temporary binary removed.
+- `gofmt -d internal/operation/report.go internal/operation/report_test.go` and `git diff --check` — no output. `git diff --cached --name-status` was empty; status contained only the six Task 03 paths. A secret/artifact scan found no `.env`, key, certificate, or archive files.
+
+No hosted services, downloads, installations, commits, or payloads were used.
+
+### Task 03 follow-up — order-independent behavior and bound reason codes
+
+**Status:** complete for the offline report-contract correction (working tree,
+uncommitted). No operation engine or dependency was added.
+
+#### TDD evidence
+
+1. **Red:** After adding order-independent behavior reduction, reason-code binding, and
+   blocking-`not_used` guard tests but before implementation,
+   `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/operation -run 'TestReportRestoreBehaviorReductionIsOrderIndependent|TestReportValidateReasonCodes|TestReportValidateRejectsBlockingStateLabeledNotUsed' -count=1 -v`
+   failed: 8 tests passed and 8 failed. Sampled behavior could mask unchecked behavior by
+   component order, and valid-looking but extraneous/misbound reason codes were accepted.
+2. **Green:** After the minimal reduction and reason binding changes, the same guarded
+   focused command passed 15 tests. The guarded
+   `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/operation -run TestReport -count=1 -v`
+   passed 69 tests.
+
+Behavior reduction now scans all applicable restored components: non-passed/non-sampled
+behavior blocks; sampled/inconclusive behavior is reported only after that full scan.
+`feature_not_observed` requires the reliable-absence tuple;
+`outside_declared_scope` requires excluded support; extraneous reason codes are rejected.
+The blocking-`not_used` regression now reaches and asserts its intended guard with an
+otherwise coherent excluded/permission-denied tuple and a valid reason code.
+
+#### Follow-up validation
+
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./... -count=1` — passed (3 packages).
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go vet ./...` — passed.
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go build -o /tmp/sparc-task03-rereview ./cmd/sparc` — passed; temporary binary removed.
+- `GOOS=windows GOARCH=amd64 GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -c -o /tmp/sparc-operation-rereview-windows.test.exe ./internal/operation` — passed; temporary binary removed.
+- `gofmt -d internal/operation/report.go internal/operation/report_test.go` and `git diff --check` — no output. `git diff --cached --name-status` was empty; status contained only the six Task 03 paths. A secret/artifact scan found no `.env`, key, certificate, or archive files.
+
+No hosted services, downloads, installations, commits, or payloads were used.
