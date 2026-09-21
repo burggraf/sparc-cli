@@ -70,7 +70,7 @@ func TestRunCommandContract(t *testing.T) {
 			name:       "unknown command",
 			args:       []string{"archive"},
 			wantCode:   2,
-			wantStderr: "sparc: unknown command \"archive\"\nRun \"sparc help\" for usage.\n",
+			wantStderr: "sparc: unknown command\nRun \"sparc help\" for usage.\n",
 		},
 	}
 
@@ -204,5 +204,20 @@ func TestRunHelpAndVersionHaveNoObservedSideEffects(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != "sentinel" {
 		t.Errorf("working directory entries = %v, want only sentinel", entries)
+	}
+}
+
+func TestRunUnknownCommandDoesNotDiscloseInput(t *testing.T) {
+	for _, arg := range []string{"secret-canary", "\x1b[31msecret-canary\n"} {
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{arg}, strings.NewReader(""), &stdout, &stderr); code != 2 {
+			t.Fatalf("exit = %d", code)
+		}
+		if stdout.Len() != 0 || stderr.String() != "sparc: unknown command\nRun \"sparc help\" for usage.\n" {
+			t.Fatal("unexpected public output")
+		}
+		if strings.Contains(stderr.String(), "secret-canary") || strings.Contains(stderr.String(), "\x1b") {
+			t.Fatal("input disclosed")
+		}
 	}
 }

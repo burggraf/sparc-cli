@@ -45,7 +45,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "sparc: %s is not available in this scaffold\n", args[0])
 		return 1
 	default:
-		fmt.Fprintf(stderr, "sparc: unknown command %q\nRun \"sparc help\" for usage.\n", args[0])
+		fmt.Fprint(stderr, "sparc: unknown command\nRun \"sparc help\" for usage.\n")
 		return 2
 	}
 }

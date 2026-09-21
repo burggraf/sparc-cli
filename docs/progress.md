@@ -295,3 +295,60 @@ otherwise coherent excluded/permission-denied tuple and a valid reason code.
 - `gofmt -d internal/operation/report.go internal/operation/report_test.go` and `git diff --check` — no output. `git diff --cached --name-status` was empty; status contained only the six Task 03 paths. A secret/artifact scan found no `.env`, key, certificate, or archive files.
 
 No hosted services, downloads, installations, commits, or payloads were used.
+
+## Task 04, storage slice — implementation candidate (Tasks 1–3)
+
+Pinned cached `golang.org/x/term v0.39.0` and `golang.org/x/sys v0.40.0`
+without network resolution. CLI unknown-command diagnostics are fixed and never
+reflect argument values. Added `internal/platform` native location lookup,
+exclusive directory/file creation, bounded private-file reads and fixed sentinel
+errors. No config parser, credential-input implementation or operational command
+has been enabled in this slice.
+
+macOS enforces POSIX UID/type/link/exact-mode checks and rejects unsafe ancestors,
+except named root-owned sticky `/private/tmp` and `/private/var/tmp` anchors.
+Windows attaches the protected user+SYSTEM DACL at creation, validates handles,
+and inspects untrusted ancestor DACLs. Only user/SYSTEM/Administrators may have
+non-read ancestor rights; unsupported ACE forms fail closed. The local volume
+root is the documented trusted ACL anchor. Details are in `docs/credentials.md`.
+
+### Observed RED → GREEN
+
+Commands use `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOWORK=off` throughout.
+
+- RED: `go test ./internal/cli -run 'TestRun(CommandContract|UnknownCommandDoesNotDiscloseInput)' -count=1`
+  failed against reflected unknown-command output after the fixed-output and
+  canary/control tests were written.
+- GREEN: `go test ./internal/cli -run TestRun -count=1` passed after the single
+  diagnostic replacement.
+- RED: `go test ./internal/platform -count=1` failed to build after writing the
+  common/macOS tests and before adding the platform API/implementation.
+- GREEN: `go test ./internal/platform -count=1 -v` passed after implementation.
+  Windows-specific tests were authored before Windows implementation, but their
+  runtime RED/GREEN has **not** been observed on this macOS host.
+
+### Fresh verification
+
+- `go get golang.org/x/term@v0.39.0 golang.org/x/sys@v0.40.0` — resolved offline
+  from cache; `go mod verify` passed.
+- `go test ./internal/cli ./internal/platform -count=1 -v` — passed, including
+  exclusive/concurrent creation, no-clobber, modes, unsafe ancestors, symlinks,
+  hard links, FIFO refusal, bounds, locations and redacted errors.
+- `go test ./... -count=1` and `go vet ./...` — passed.
+- `go test -race ./internal/cli ./internal/platform -count=1` — passed.
+- Native `go build ./cmd/sparc` — passed, binary placed in a private temporary
+  `/tmp/sparc-task04-builds.*` directory and removed.
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c` separately for
+  `./internal/cli` and `./internal/platform` — passed, outputs removed.
+- Windows AMD64 `go vet ./internal/cli ./internal/platform` and CLI build — passed.
+- `gofmt` and `git diff --check` — clean. No files staged; no commit/push.
+
+### Explicit qualification gates
+
+Supervisor-approved scope: macOS extended/inherited ACL handling is not implemented
+or proven; POSIX modes alone must not be presented as effective ACL privacy. This
+is a security/release blocker before using real credentials. Windows native DACL,
+reparse and second-user behavior likewise remain unexecuted runtime gates;
+cross-compilation is not proof. The native reparse test deliberately fails, rather
+than skips, if its Windows runner lacks symlink privilege. This slice and Task 04
+remain incompletely qualified, pending these gates and independent review.
