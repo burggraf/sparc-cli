@@ -1,0 +1,11 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+/archives/
+/.sparc-local/
+/target/
+/desktop/node_modules/
+/desktop/dist/
+/desktop/src-tauri/target/
+*.agekey

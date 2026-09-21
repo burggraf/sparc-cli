@@ -1,0 +1,376 @@
+{
+  "version": 1,
+  "prepared_date": "2026-09-21",
+  "source_commit": "858f3643fc08183c269defe1e7b8e638a1aa5e54",
+  "scope": "All tracked historical Markdown documentation plus root README/Cargo manifests and local archive/database harness source and tests. Reference only; not Go implementation or live authorization.",
+  "excluded": [
+    ".git",
+    ".sparc-local",
+    "desktop application source",
+    "target",
+    "private credentials/configs/receipts/archives",
+    "untracked files"
+  ],
+  "files": [
+    {
+      "source_path": ".gitignore",
+      "snapshot_path": "legacy/.gitignore",
+      "bytes": 145,
+      "sha256": "08282e037f982ab8ae8dc97e8a759cb54a4eb1351233af8bf705e92148653db8"
+    },
+    {
+      "source_path": "Cargo.lock",
+      "snapshot_path": "legacy/Cargo.lock",
+      "bytes": 38939,
+      "sha256": "5f8123a751f5406c3b4dbad8bd62b1c7eb3c6bc6bc76c11df56e0bc1e961075e"
+    },
+    {
+      "source_path": "Cargo.toml",
+      "snapshot_path": "legacy/Cargo.toml",
+      "bytes": 358,
+      "sha256": "2c7afb587e0a4c60ae6ceecc5a4c76714d7f227d62db2f1ab9b7b1d335bd5621"
+    },
+    {
+      "source_path": "README.md",
+      "snapshot_path": "legacy/README.md",
+      "bytes": 11492,
+      "sha256": "6ebee6c222de67430bf504ac9f56cfeffe0346b7771990cfd6a82509d7fb8bc1"
+    },
+    {
+      "source_path": "docs/archive-prototype.md",
+      "snapshot_path": "legacy/docs/archive-prototype.md",
+      "bytes": 8550,
+      "sha256": "fb30d30bc9d6b119e2ebebca70b0840bbda16ecbe939ad4df678eb90539c4f9e"
+    },
+    {
+      "source_path": "docs/plans/2026-09-18-database-feasibility.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-18-database-feasibility.md",
+      "bytes": 8391,
+      "sha256": "8edebe8bb316adc62825451d403f02f192981f18bb2953b4cc4daa785c9da600"
+    },
+    {
+      "source_path": "docs/plans/2026-09-18-hosted-database-rehearsal.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-18-hosted-database-rehearsal.md",
+      "bytes": 20184,
+      "sha256": "bd02cd2cb12f8fe8f76b1e3d4db106c038f283b2bda3483faa7f01d56795c838"
+    },
+    {
+      "source_path": "docs/plans/2026-09-18-local-archive-prototype.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-18-local-archive-prototype.md",
+      "bytes": 10004,
+      "sha256": "017b79ef202f2ef781910d7e4be14d95b3d033d5b20098840afb36aaef2ef49e"
+    },
+    {
+      "source_path": "docs/plans/2026-09-18-local-desktop-alpha-design.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-18-local-desktop-alpha-design.md",
+      "bytes": 10707,
+      "sha256": "8c0fb331591fe5005a0c382424d4f81b25d0d00965de617038b1c9f48cd1be4a"
+    },
+    {
+      "source_path": "docs/plans/2026-09-18-local-desktop-alpha-implementation.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-18-local-desktop-alpha-implementation.md",
+      "bytes": 21280,
+      "sha256": "f8520e28c3092a395e42a91738445f6e35372d9ee3f7b0260df5257671cd62ba"
+    },
+    {
+      "source_path": "docs/plans/2026-09-18-supabase-project-archive-design.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-18-supabase-project-archive-design.md",
+      "bytes": 60313,
+      "sha256": "1ee9a98700c606004595ccedcf1f66380eb7f2f787f8b31344656a4ce0ac69e8"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-application-database-inspection-design.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-application-database-inspection-design.md",
+      "bytes": 8304,
+      "sha256": "d2ad234b7e5989f4641d770158c80edb4249b325d3de94e2dfef99396ec1f221"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-application-database-inspection-implementation.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-application-database-inspection-implementation.md",
+      "bytes": 14516,
+      "sha256": "4d3316f56ebcb958000e1269f7420df62eeb83a89fac9a653277ceb27c15e845"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-application-dependency-inspection-design.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-application-dependency-inspection-design.md",
+      "bytes": 10608,
+      "sha256": "17a62b1dc81229908ab160c4578a284655c79a83123faab521ec8836d654b4d8"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-application-dependency-inspection-results.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-application-dependency-inspection-results.md",
+      "bytes": 5287,
+      "sha256": "2bf95e46f703276e169062364b4616ff80c56c1ecb27902f0898964e1f82f17a"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-database-capture-route-vetting.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-database-capture-route-vetting.md",
+      "bytes": 11397,
+      "sha256": "1134a499ecd53815569d39ca19bfca273c49667f60bd6bab78d5026f430a4889"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-database-recipe-preflight.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-database-recipe-preflight.md",
+      "bytes": 5548,
+      "sha256": "fb83bd2e7c4f5ca829f87fa159fe34b7d00ef3c8a5446c6e10116d8b292235f9"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-destination-permission-preflight-design.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-destination-permission-preflight-design.md",
+      "bytes": 9971,
+      "sha256": "4aebf99ce96ef3abb4bd44b5794a51f558cdd42484c51cbe16989697757af6bc"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-destination-permission-preflight-results.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-destination-permission-preflight-results.md",
+      "bytes": 9555,
+      "sha256": "7e941796562cb279e618fafc4685a37250cd69449a238f6b7cb5fe6fd75bce79"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-expanded-database-coverage-design.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-expanded-database-coverage-design.md",
+      "bytes": 10946,
+      "sha256": "87643d4994c10b1cc9c216eb9f3b9d6d0aa972eddfb14141dad1c4b50dd7bf94"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-expanded-database-implementation.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-expanded-database-implementation.md",
+      "bytes": 17901,
+      "sha256": "b1e89d31245ae8d87ee9d070ee830dbd7fd70337128177663ebcc58c2991f7c3"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-native-literal-schema-selection-design.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-native-literal-schema-selection-design.md",
+      "bytes": 7066,
+      "sha256": "c7bda5c3fa165c85c40ce90a719da49146d531848cee955be7f1f9acc16ad09b"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-native-literal-schema-selection-results.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-native-literal-schema-selection-results.md",
+      "bytes": 6308,
+      "sha256": "873fffabf6297deea4bc94a2c169c5d3a7f597e552e2f4d4f7aa82f5a311ca7a"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-native-permissions-experiment-design.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-native-permissions-experiment-design.md",
+      "bytes": 5884,
+      "sha256": "2b6157f3fd1d784072bec117392033314c1e4849a5562d6be201dfce10f8108f"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-native-permissions-experiment-results.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-native-permissions-experiment-results.md",
+      "bytes": 10659,
+      "sha256": "1521917d74f0421efebb5e676f224ea227661a8213a3ea2645b59bdb71a5d4a1"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-native-recipe-implementation.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-native-recipe-implementation.md",
+      "bytes": 8951,
+      "sha256": "ca4ad642257c5b4163855336412cf3ee13dd25060478ed9f93efd32c398cc7e4"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-native-recovery-profile-design.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-native-recovery-profile-design.md",
+      "bytes": 12008,
+      "sha256": "3944af3bfd12e0995d24a6553766e2bed1dae70913fd99391c0ad72ab762d351"
+    },
+    {
+      "source_path": "docs/plans/2026-09-20-native-recovery-profile-results.md",
+      "snapshot_path": "legacy/docs/plans/2026-09-20-native-recovery-profile-results.md",
+      "bytes": 7537,
+      "sha256": "0a65b9ed18c7a7372ad2e2c56a5554eeacc873c987f7b132835c7bf09074127f"
+    },
+    {
+      "source_path": "scripts/application_dependencies.py",
+      "snapshot_path": "legacy/scripts/application_dependencies.py",
+      "bytes": 24974,
+      "sha256": "b9840f3534cc61710c550f620f8fc6fb69da3ffd46a6adb1db9d3f0a4881a160"
+    },
+    {
+      "source_path": "scripts/application_inventory.py",
+      "snapshot_path": "legacy/scripts/application_inventory.py",
+      "bytes": 19528,
+      "sha256": "4df1bc9732f24f5b0c5deb5f21e673809431027b26ec0c9776a5138527f67a4e"
+    },
+    {
+      "source_path": "scripts/destination_permissions.py",
+      "snapshot_path": "legacy/scripts/destination_permissions.py",
+      "bytes": 16550,
+      "sha256": "c2d32b0c25a4d281225fe3e9d1dd0310b9bd8c54f7be937b822141814f1699a6"
+    },
+    {
+      "source_path": "scripts/expanded_metadata.py",
+      "snapshot_path": "legacy/scripts/expanded_metadata.py",
+      "bytes": 4657,
+      "sha256": "aaeb159b132ff2ff8316d1860cc0e953548ea073ca67a8f080b90ad188c3548f"
+    },
+    {
+      "source_path": "scripts/expanded_rehearsal.py",
+      "snapshot_path": "legacy/scripts/expanded_rehearsal.py",
+      "bytes": 38949,
+      "sha256": "2b8b7fa14df5ee7670bb922aacbeb80bfb5dff3b87d8d507bb7066a88a44e157"
+    },
+    {
+      "source_path": "scripts/hosted_rehearsal.py",
+      "snapshot_path": "legacy/scripts/hosted_rehearsal.py",
+      "bytes": 21000,
+      "sha256": "29b38b6bc6704a003024b3257748996c43887bbe4aa2018a18501fdeb6d0ab9c"
+    },
+    {
+      "source_path": "scripts/native_recipe.py",
+      "snapshot_path": "legacy/scripts/native_recipe.py",
+      "bytes": 7222,
+      "sha256": "1073fdc867e14003dadd81e4540837ff6bf36c83eb494a3c4506e3d9c554a8d6"
+    },
+    {
+      "source_path": "scripts/native_schema_selection.py",
+      "snapshot_path": "legacy/scripts/native_schema_selection.py",
+      "bytes": 376,
+      "sha256": "e39ee4b41689d535e2f04f969888ed3b5c8159abb4f8ec2a60d2842a6c439d31"
+    },
+    {
+      "source_path": "src/database.rs",
+      "snapshot_path": "legacy/src/database.rs",
+      "bytes": 9527,
+      "sha256": "91245d36b9e5dbc1d64fe551d454d2c43f459a6609ffff09d0fef1d418160624"
+    },
+    {
+      "source_path": "src/lib.rs",
+      "snapshot_path": "legacy/src/lib.rs",
+      "bytes": 16666,
+      "sha256": "b4c7d7705ec573687a9f03fe94b2bd4e26bbf60e225cf8aba1a2e8af2120e698"
+    },
+    {
+      "source_path": "src/main.rs",
+      "snapshot_path": "legacy/src/main.rs",
+      "bytes": 3639,
+      "sha256": "db3bd8dc5fc00ca0e76f1edc3d4f2e154547c4ca6fa876f47f6f088138ac4844"
+    },
+    {
+      "source_path": "tests/age_interop.rs",
+      "snapshot_path": "legacy/tests/age_interop.rs",
+      "bytes": 3086,
+      "sha256": "5e5a78aac5cc23505e9820c15309ec79c6f60660c444abfc4a6d9b40c797043d"
+    },
+    {
+      "source_path": "tests/application_dependencies_pg_test.py",
+      "snapshot_path": "legacy/tests/application_dependencies_pg_test.py",
+      "bytes": 15089,
+      "sha256": "7d778b50a9323c1cb39a71900344f42775cb654fb1ceb5879e5dfb6c9073e372"
+    },
+    {
+      "source_path": "tests/application_dependencies_test.py",
+      "snapshot_path": "legacy/tests/application_dependencies_test.py",
+      "bytes": 8716,
+      "sha256": "dcaef5c8a892d728041c6e621e5123c1f87940c7ad36ab3d4f83c65d96d6d949"
+    },
+    {
+      "source_path": "tests/application_inventory_pg_test.py",
+      "snapshot_path": "legacy/tests/application_inventory_pg_test.py",
+      "bytes": 11064,
+      "sha256": "52351ff76e8aba85b833e49aa0f05cac323da153dd95fe3ea3e2ca43c5d68eeb"
+    },
+    {
+      "source_path": "tests/application_inventory_test.py",
+      "snapshot_path": "legacy/tests/application_inventory_test.py",
+      "bytes": 12817,
+      "sha256": "6093ff79b3cf4c574f7976f65754abbf3cdaadf5fb021eabfe47a53ee86ad3dc"
+    },
+    {
+      "source_path": "tests/archive.rs",
+      "snapshot_path": "legacy/tests/archive.rs",
+      "bytes": 15592,
+      "sha256": "b91f29730351fa0d5410a7dd32f08c445dfa90e1860d793403edc8306fa1f84e"
+    },
+    {
+      "source_path": "tests/cli.rs",
+      "snapshot_path": "legacy/tests/cli.rs",
+      "bytes": 4118,
+      "sha256": "5e8756b7f04c56f8340318c1e4ed0cd5b2a9e8e628926815c5a0b7ce22ba5efc"
+    },
+    {
+      "source_path": "tests/database.rs",
+      "snapshot_path": "legacy/tests/database.rs",
+      "bytes": 9813,
+      "sha256": "6c79bb554a6abda4be770d21afed47cf06fbad0ca4f17b43ecec84fa45efb2ca"
+    },
+    {
+      "source_path": "tests/destination_permissions_pg_test.py",
+      "snapshot_path": "legacy/tests/destination_permissions_pg_test.py",
+      "bytes": 18054,
+      "sha256": "2db30db1e827ae2c1785d8d9942b65edb0a7f330a487c4caab8a3f12f3096d56"
+    },
+    {
+      "source_path": "tests/destination_permissions_test.py",
+      "snapshot_path": "legacy/tests/destination_permissions_test.py",
+      "bytes": 11759,
+      "sha256": "3c562ca378da69b496e32a0b8b046edb00a8dac7f18159f4f6eb5f9445a0210f"
+    },
+    {
+      "source_path": "tests/expanded_metadata_pg_test.py",
+      "snapshot_path": "legacy/tests/expanded_metadata_pg_test.py",
+      "bytes": 5581,
+      "sha256": "67a71644a0171c47a5318b30fc57a26cc1396f67fcf21ccc9cdc63c14b517cc5"
+    },
+    {
+      "source_path": "tests/expanded_metadata_test.py",
+      "snapshot_path": "legacy/tests/expanded_metadata_test.py",
+      "bytes": 6178,
+      "sha256": "6d86b159b4d7cfae2f464f371e8b34b16a8c20b8cbad2675566a3ae30afc3993"
+    },
+    {
+      "source_path": "tests/expanded_rehearsal_pg_test.py",
+      "snapshot_path": "legacy/tests/expanded_rehearsal_pg_test.py",
+      "bytes": 11843,
+      "sha256": "049d487ec57b893c20d2ff515c24e791bde412f719a7ffecfe5fba22dd37d2b4"
+    },
+    {
+      "source_path": "tests/expanded_rehearsal_test.py",
+      "snapshot_path": "legacy/tests/expanded_rehearsal_test.py",
+      "bytes": 8291,
+      "sha256": "62d4db592ec161f64f317266dce74906f79cfe7a83c9e9c9fc64c38cc5b96eed"
+    },
+    {
+      "source_path": "tests/hosted_rehearsal_test.py",
+      "snapshot_path": "legacy/tests/hosted_rehearsal_test.py",
+      "bytes": 14092,
+      "sha256": "1bd2f7374e1b28fd4f098f354f5e6ea0a2784ea775c2532204c58893c58e984c"
+    },
+    {
+      "source_path": "tests/identity.rs",
+      "snapshot_path": "legacy/tests/identity.rs",
+      "bytes": 1811,
+      "sha256": "1cf26d6364d5caedafef6ea4121a3da502af36fcb86305efae2c86ea1364306d"
+    },
+    {
+      "source_path": "tests/native_permissions_pg_test.py",
+      "snapshot_path": "legacy/tests/native_permissions_pg_test.py",
+      "bytes": 23894,
+      "sha256": "65cbcf637f1306f8703f75b95ddbf985f9ae456ba6ead3a7743906c1a50f0ffa"
+    },
+    {
+      "source_path": "tests/native_recipe_test.py",
+      "snapshot_path": "legacy/tests/native_recipe_test.py",
+      "bytes": 11370,
+      "sha256": "535efd21a9df1181eb1ffa6b9089f9970ccfb6e8e2b0a48f95a635a675c678d3"
+    },
+    {
+      "source_path": "tests/native_recovery_profile_pg_test.py",
+      "snapshot_path": "legacy/tests/native_recovery_profile_pg_test.py",
+      "bytes": 62627,
+      "sha256": "9d8fad9a695d1af5ac652c481ccea71b43f9cec1e539f7424f7acb3032488a76"
+    },
+    {
+      "source_path": "tests/native_schema_selection_pg_test.py",
+      "snapshot_path": "legacy/tests/native_schema_selection_pg_test.py",
+      "bytes": 10792,
+      "sha256": "25791d46a93969bc79730be8e73147c8aedf94714d8fcfabf6ba6106115363a5"
+    },
+    {
+      "source_path": "tests/native_schema_selection_test.py",
+      "snapshot_path": "legacy/tests/native_schema_selection_test.py",
+      "bytes": 1567,
+      "sha256": "b7761cbb5bc9938b833bb20234d7abf72dbbca5c79c48e00e45aab0051c85cff"
+    }
+  ]
+}

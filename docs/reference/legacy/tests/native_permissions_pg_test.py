@@ -1,0 +1,335 @@
+"""Opt-in, socket-only PG17 experiment for native permission preservation.
+
+This is deliberately a fixed synthetic fixture, not a production restore API.
+"""
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import time
+import unittest
+
+
+@unittest.skipUnless(os.environ.get('SPARC_TEST_PG17_BIN'), 'opt-in local PostgreSQL 17 test')
+class NativePermissionsPostgresTest(unittest.TestCase):
+    def test_native_dump_restore_preserves_fixture_permissions_and_exposes_default_acl_drift(self):
+        binary = Path(os.environ['SPARC_TEST_PG17_BIN']).resolve()
+        self.assertEqual(binary, Path('/opt/homebrew/opt/postgresql@17/bin').resolve())
+        with tempfile.TemporaryDirectory(prefix='spnp-', dir='/tmp') as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            socket = root / 'socket'
+            socket.mkdir(mode=0o700)
+            env = {
+                'PATH': '/usr/bin:/bin', 'HOME': directory, 'LC_ALL': 'C', 'TZ': 'UTC',
+                'PGHOST': str(socket), 'PGPORT': '6549', 'PGUSER': 'bootstrap',
+                'PGDATABASE': 'postgres', 'PGCONNECT_TIMEOUT': '2', 'PGOPTIONS': '-c timezone=UTC',
+            }
+
+            def run(tool, *args, sql=None, user=None, database=None, ok=True):
+                command = [str(binary / tool), *args]
+                command_env = dict(env)
+                if user:
+                    command_env['PGUSER'] = user
+                if database:
+                    command_env['PGDATABASE'] = database
+                try:
+                    result = subprocess.run(
+                        command, input=sql.encode() if isinstance(sql, str) else sql,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=command_env,
+                        cwd=root, timeout=30,
+                    )
+                except subprocess.TimeoutExpired as error:
+                    self.fail('%s timed out: %s' % (tool, (error.stderr or b'')[-2000:].decode(errors='replace')))
+                if ok is True:
+                    self.assertEqual(
+                        result.returncode, 0,
+                        '%s failed: %s' % (tool, result.stderr[-2000:].decode(errors='replace')),
+                    )
+                elif ok is False:
+                    self.assertNotEqual(result.returncode, 0, '%s unexpectedly succeeded' % tool)
+                self.assertLessEqual(len(result.stdout), 200000)
+                self.assertLessEqual(len(result.stderr), 200000)
+                return result
+
+            def query(sql, **kwargs):
+                return run('psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1', '-f', '-', sql=sql,
+                           **kwargs).stdout.decode().strip()
+
+            self.assertRegex(run('postgres', '--version').stdout, rb'PostgreSQL\) 17\.')
+            run('initdb', '-D', str(root / 'data'), '-U', 'bootstrap', '-A', 'trust',
+                '--encoding=UTF8', '--no-locale')
+            server_log = root / 'server.log'
+            with server_log.open('wb') as log:
+                server = subprocess.Popen(
+                    [str(binary / 'postgres'), '-D', str(root / 'data'), '-k', str(socket),
+                     '-p', '6549', '-c', 'listen_addresses='],
+                    env=env, cwd=root, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                )
+                try:
+                    for _ in range(50):
+                        if run('pg_isready', '-q', ok=None).returncode == 0:
+                            break
+                        self.assertIsNone(server.poll(), 'local server stopped: ' + server_log.read_text(errors='replace')[-2000:])
+                        time.sleep(.1)
+                    else:
+                        self.fail('local socket-only server readiness timeout: ' + server_log.read_text(errors='replace')[-2000:])
+
+                    query('''
+                        CREATE ROLE app_owner LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+                        CREATE ROLE app_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+                        CREATE ROLE unapproved LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+                        CREATE DATABASE native_source OWNER bootstrap;
+                        CREATE DATABASE native_compatible OWNER bootstrap;
+                        CREATE DATABASE native_incompatible OWNER bootstrap;
+                        CREATE DATABASE native_collision OWNER bootstrap;
+                        GRANT CREATE ON DATABASE native_source, native_compatible, native_incompatible,
+                          native_collision TO app_owner;
+                    ''')
+                    source = 'native_source'
+                    query('''
+                        SET ROLE app_owner;
+                        CREATE SCHEMA native_app;
+                        CREATE TABLE native_app.documents (
+                          id integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                          reader_note text NOT NULL,
+                          owner_note text NOT NULL
+                        );
+                        INSERT INTO native_app.documents (reader_note, owner_note)
+                          VALUES ('visible-to-reader', 'owner-only'), ('hidden-by-rls', 'owner-only');
+                        CREATE FUNCTION native_app.marker() RETURNS text LANGUAGE sql
+                          SECURITY DEFINER SET search_path = pg_catalog AS $$SELECT 'native-marker'::text$$;
+                        REVOKE ALL ON FUNCTION native_app.marker() FROM PUBLIC;
+                        GRANT USAGE ON SCHEMA native_app TO app_reader;
+                        GRANT USAGE ON SCHEMA native_app TO PUBLIC;
+                        GRANT SELECT (id, reader_note) ON native_app.documents TO app_reader;
+                        GRANT USAGE, SELECT ON SEQUENCE native_app.documents_id_seq TO app_reader;
+                        GRANT EXECUTE ON FUNCTION native_app.marker() TO app_reader;
+                        ALTER TABLE native_app.documents ENABLE ROW LEVEL SECURITY;
+                        ALTER TABLE native_app.documents FORCE ROW LEVEL SECURITY;
+                        CREATE POLICY reader_visible ON native_app.documents FOR SELECT TO app_reader USING (id = 1);
+                        ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA native_app
+                          GRANT SELECT ON TABLES TO app_reader;
+                        CREATE TABLE native_app.access_probe (id integer PRIMARY KEY, note text NOT NULL);
+                        INSERT INTO native_app.access_probe VALUES (1, 'ordinary-table-probe');
+                        RESET ROLE;
+                    ''', database=source)
+
+                    def metadata_snapshot(database):
+                        return query('''
+                            SELECT n.nspowner::regrole::text,
+                                   (SELECT c.relowner::regrole::text FROM pg_class c
+                                     WHERE c.oid = 'native_app.documents'::regclass),
+                                   (SELECT c.relowner::regrole::text FROM pg_class c
+                                     WHERE c.oid = 'native_app.documents_id_seq'::regclass),
+                                   (SELECT p.proowner::regrole::text FROM pg_proc p
+                                     WHERE p.oid = 'native_app.marker()'::regprocedure),
+                                   (SELECT relrowsecurity::text || ':' || relforcerowsecurity::text FROM pg_class
+                                     WHERE oid = 'native_app.documents'::regclass),
+                                   (SELECT polcmd::text || ':' || pg_get_expr(polqual, polrelid) FROM pg_policy
+                                     WHERE polrelid = 'native_app.documents'::regclass AND polname = 'reader_visible')
+                              FROM pg_namespace n WHERE n.nspname = 'native_app';
+                        ''', database=database)
+
+                    def semantic_acl(database):
+                        # A NULL object ACL means PostgreSQL's object-type default ACL; a missing/default
+                        # ACL entry means no altered default, so it must not be synthesized as an object ACL.
+                        rendered = query('''
+                            WITH acl_entries AS (
+                              SELECT 'schema' AS kind, n.nspname AS object_name, n.nspowner AS owner,
+                                     x.grantor, x.grantee, x.privilege_type, x.is_grantable
+                                FROM pg_namespace n
+                                CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl, acldefault('n'::"char", n.nspowner))) x
+                               WHERE n.nspname = 'native_app'
+                              UNION ALL
+                              SELECT CASE c.relkind WHEN 'S' THEN 'sequence' ELSE 'table' END,
+                                     n.nspname || '.' || c.relname, c.relowner,
+                                     x.grantor, x.grantee, x.privilege_type, x.is_grantable
+                                FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                                CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,
+                                  acldefault(CASE c.relkind WHEN 'S' THEN 's'::"char" ELSE 'r'::"char" END, c.relowner))) x
+                               WHERE c.oid IN (to_regclass('native_app.documents'), to_regclass('native_app.access_probe'),
+                                               to_regclass('native_app.documents_id_seq'))
+                              UNION ALL
+                              SELECT 'column', n.nspname || '.' || c.relname || '.' || a.attname, c.relowner,
+                                     x.grantor, x.grantee, x.privilege_type, x.is_grantable
+                                FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+                                JOIN pg_namespace n ON n.oid=c.relnamespace
+                                CROSS JOIN LATERAL aclexplode(COALESCE(a.attacl, acldefault('c'::"char", c.relowner))) x
+                               WHERE c.oid IN (to_regclass('native_app.documents'), to_regclass('native_app.access_probe'))
+                                 AND a.attnum > 0 AND NOT a.attisdropped
+                              UNION ALL
+                              SELECT 'routine', 'native_app.marker()', p.proowner,
+                                     x.grantor, x.grantee, x.privilege_type, x.is_grantable
+                                FROM pg_proc p
+                                CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f'::"char", p.proowner))) x
+                               WHERE p.oid=to_regprocedure('native_app.marker()')
+                              UNION ALL
+                              SELECT 'default', COALESCE(n.nspname, '<global>'), d.defaclrole,
+                                     x.grantor, x.grantee, x.privilege_type, x.is_grantable
+                                FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace
+                                CROSS JOIN LATERAL aclexplode(COALESCE(d.defaclacl, '{}'::aclitem[])) x
+                               WHERE d.defaclrole='app_owner'::regrole AND d.defaclobjtype='r'
+                                 AND (d.defaclnamespace=0 OR n.nspname='native_app')
+                            )
+                            SELECT kind || '|' || object_name || '|' || owner::regrole::text || '|' ||
+                                   CASE grantor WHEN 0 THEN 'PUBLIC' ELSE grantor::regrole::text END || '|' ||
+                                   CASE grantee WHEN 0 THEN 'PUBLIC' ELSE grantee::regrole::text END || '|' ||
+                                   privilege_type || '|' || is_grantable::text
+                              FROM acl_entries
+                             ORDER BY 1;
+                        ''', database=database)
+                        return rendered.splitlines() if rendered else []
+
+                    source_snapshot = metadata_snapshot(source)
+                    self.assertEqual(source_snapshot.split('|'), [
+                        'app_owner', 'app_owner', 'app_owner', 'app_owner', 'true:true', 'r:(id = 1)',
+                    ])
+                    source_acl = semantic_acl(source)
+                    self.assertEqual(source_acl, sorted(source_acl))
+                    expected_acl = {
+                        'column|native_app.documents.id|app_owner|app_owner|app_reader|SELECT|false',
+                        'column|native_app.documents.reader_note|app_owner|app_owner|app_reader|SELECT|false',
+                        'default|native_app|app_owner|app_owner|app_reader|SELECT|false',
+                        'routine|native_app.marker()|app_owner|app_owner|app_reader|EXECUTE|false',
+                        'sequence|native_app.documents_id_seq|app_owner|app_owner|app_reader|SELECT|false',
+                        'schema|native_app|app_owner|app_owner|PUBLIC|USAGE|false',
+                        'sequence|native_app.documents_id_seq|app_owner|app_owner|app_reader|USAGE|false',
+                        'table|native_app.access_probe|app_owner|app_owner|app_reader|SELECT|false',
+                    }
+                    self.assertTrue(expected_acl <= set(source_acl))
+                    self.assertFalse(any('|unapproved|' in entry and not entry.startswith('schema|')
+                                         for entry in source_acl))
+                    self.assertEqual(query('SELECT id || \':\' || reader_note FROM native_app.documents ORDER BY id;',
+                                           user='app_reader', database=source), '1:visible-to-reader')
+                    run('psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c',
+                        'SELECT owner_note FROM native_app.documents;', user='app_reader', database=source, ok=False)
+                    self.assertEqual(query('SELECT native_app.marker();', user='app_reader', database=source), 'native-marker')
+                    run('psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c',
+                        'SELECT native_app.marker();', user='unapproved', database=source, ok=False)
+                    self.assertEqual(query('SELECT count(*) FROM native_app.documents;', user='app_owner',
+                                           database=source), '0')
+                    self.assertNotEqual(query("SELECT nextval('native_app.documents_id_seq');", user='app_reader',
+                                              database=source), '')
+                    self.assertNotEqual(query('SELECT last_value FROM native_app.documents_id_seq;', user='app_reader',
+                                              database=source), '')
+                    run('psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c',
+                        "SELECT nextval('native_app.documents_id_seq');", user='unapproved', database=source, ok=False)
+                    run('psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c',
+                        'SELECT last_value FROM native_app.documents_id_seq;', user='unapproved', database=source, ok=False)
+
+                    archive = root / 'native_app.dump'
+                    run('pg_dump', '--format=custom', '--schema=native_app', '--file=' + str(archive), source)
+                    self.assertTrue(archive.is_file())
+                    self.assertGreater(archive.stat().st_size, 0)
+
+                    def restore(database, success=True):
+                        return run('pg_restore', '--dbname=' + database, '--single-transaction', '--exit-on-error',
+                                   str(archive), user='app_owner', ok=success)
+
+                    restore('native_compatible')
+                    self.assertEqual(metadata_snapshot('native_compatible'), source_snapshot)
+                    compatible_acl = semantic_acl('native_compatible')
+                    self.assertEqual(compatible_acl, source_acl)
+                    self.assertEqual(query('SELECT id || \':\' || reader_note FROM native_app.documents ORDER BY id;',
+                                           user='app_reader', database='native_compatible'), '1:visible-to-reader')
+                    run('psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c',
+                        'SELECT owner_note FROM native_app.documents;', user='app_reader', database='native_compatible', ok=False)
+                    self.assertEqual(query('SELECT native_app.marker();', user='app_reader', database='native_compatible'),
+                                     'native-marker')
+                    run('psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c',
+                        'SELECT native_app.marker();', user='unapproved', database='native_compatible', ok=False)
+                    self.assertEqual(query('SELECT count(*) FROM native_app.documents;', user='app_owner',
+                                           database='native_compatible'), '0')
+                    self.assertNotEqual(query("SELECT nextval('native_app.documents_id_seq');", user='app_reader',
+                                              database='native_compatible'), '')
+                    self.assertNotEqual(query('SELECT last_value FROM native_app.documents_id_seq;', user='app_reader',
+                                              database='native_compatible'), '')
+                    run('psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c',
+                        "SELECT nextval('native_app.documents_id_seq');", user='unapproved',
+                        database='native_compatible', ok=False)
+                    run('psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c',
+                        'SELECT last_value FROM native_app.documents_id_seq;', user='unapproved',
+                        database='native_compatible', ok=False)
+                    query('CREATE TABLE native_app.default_after_restore (id integer);', user='app_owner',
+                          database='native_compatible')
+                    self.assertEqual(query('SELECT id FROM native_app.default_after_restore;', user='app_reader',
+                                           database='native_compatible'), '')
+
+                    # These fixed-fixture mutations prove the semantic comparison rejects precisely the
+                    # privilege changes that boolean effective-access checks could overlook.
+                    query('GRANT SELECT ON native_app.access_probe TO unapproved;', user='app_owner',
+                          database='native_compatible')
+                    extra_table_acl = semantic_acl('native_compatible')
+                    self.assertNotEqual(extra_table_acl, source_acl)
+                    self.assertIn('table|native_app.access_probe|app_owner|app_owner|unapproved|SELECT|false',
+                                  extra_table_acl)
+                    query('REVOKE SELECT ON native_app.access_probe FROM unapproved;', user='app_owner',
+                          database='native_compatible')
+                    self.assertEqual(semantic_acl('native_compatible'), source_acl)
+                    query('ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA native_app '
+                          'GRANT SELECT ON TABLES TO app_reader WITH GRANT OPTION;', user='app_owner',
+                          database='native_compatible')
+                    default_grant_option_acl = semantic_acl('native_compatible')
+                    self.assertNotEqual(default_grant_option_acl, source_acl)
+                    self.assertIn('default|native_app|app_owner|app_owner|app_reader|SELECT|true',
+                                  default_grant_option_acl)
+                    query('ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA native_app '
+                          'REVOKE GRANT OPTION FOR SELECT ON TABLES FROM app_reader;', user='app_owner',
+                          database='native_compatible')
+                    self.assertEqual(semantic_acl('native_compatible'), source_acl)
+                    query('REVOKE SELECT ON SEQUENCE native_app.documents_id_seq FROM app_reader;', user='app_owner',
+                          database='native_compatible')
+                    missing_sequence_acl = semantic_acl('native_compatible')
+                    self.assertNotEqual(missing_sequence_acl, source_acl)
+                    self.assertNotIn('sequence|native_app.documents_id_seq|app_owner|app_owner|app_reader|SELECT|false',
+                                     missing_sequence_acl)
+
+                    query('ALTER DEFAULT PRIVILEGES FOR ROLE app_owner GRANT SELECT ON TABLES TO unapproved;',
+                          database='native_incompatible')
+                    self.assertIn('default|<global>|app_owner|app_owner|unapproved|SELECT|false',
+                                  semantic_acl('native_incompatible'))
+                    restore('native_incompatible')
+                    self.assertEqual(query("SELECT has_table_privilege('unapproved', 'native_app.access_probe', 'SELECT');",
+                                           database='native_incompatible'), 't')
+                    self.assertEqual(query('SELECT note FROM native_app.access_probe;', user='unapproved',
+                                           database='native_incompatible'), 'ordinary-table-probe')
+                    self.assertEqual(query("SELECT has_table_privilege('unapproved', 'native_app.documents', 'SELECT');",
+                                           database='native_incompatible'), 't')
+                    self.assertEqual(query('SELECT count(*) FROM native_app.documents;', user='unapproved',
+                                           database='native_incompatible'), '0')
+
+                    query('CREATE TABLE public.rollback_sentinel (id integer PRIMARY KEY, note text NOT NULL); '
+                          "INSERT INTO public.rollback_sentinel VALUES (1, 'unchanged');", database='native_collision')
+                    query('''
+                        CREATE FUNCTION public.inject_native_collision() RETURNS event_trigger
+                        LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+                        DECLARE command record;
+                        BEGIN
+                          FOR command IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
+                            IF command.object_identity = 'native_app.access_probe' THEN
+                              EXECUTE 'CREATE TABLE native_app.documents (id integer)';
+                            END IF;
+                          END LOOP;
+                        END $$;
+                        CREATE EVENT TRIGGER native_permission_collision ON ddl_command_end
+                          WHEN TAG IN ('CREATE TABLE') EXECUTE FUNCTION public.inject_native_collision();
+                    ''', database='native_collision')
+                    collision = restore('native_collision', success=False)
+                    self.assertIn(b'already exists', collision.stderr)
+                    self.assertEqual(query("SELECT to_regnamespace('native_app') IS NULL;", database='native_collision'), 't')
+                    self.assertEqual(query('SELECT id || \':\' || note FROM public.rollback_sentinel;',
+                                           database='native_collision'), '1:unchanged')
+                    query('DROP EVENT TRIGGER native_permission_collision; '
+                          'DROP FUNCTION public.inject_native_collision();', database='native_collision')
+                finally:
+                    server.terminate()
+                    try:
+                        server.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        server.kill()
+                        server.wait(timeout=5)
+
+
+if __name__ == '__main__':
+    unittest.main()
