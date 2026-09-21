@@ -431,3 +431,83 @@ and separate Windows AMD64 credentials/config test compilation and vet passed.
 Temporary compilation outputs were removed. Formatting and diff checks passed;
 no files staged, no network access, and no commits or pushes. Existing native
 console and filesystem-security qualification gates remain open.
+
+## Task 05, payload inventory slice — implementation candidate (Task 1)
+
+Added `internal/tools` typed payload metadata for `pg_dump`, `pg_restore`, and
+`psql`. The compiled production inventory is intentionally empty; lookup returns
+the fixed `tool payload unavailable` sentinel and never consults PATH,
+environment variables, adjacent files, or `build/clients/manifest.json`.
+Synthetic manifests are test-only and do not enable extraction or execution.
+
+The v1 validator accepts only PostgreSQL 17 payloads for Darwin arm64/amd64 and
+Windows amd64. It enforces the 1,024-file, 240-byte portable-path, 256 MiB/file,
+512 MiB compressed, and 1 GiB expanded ceilings with overflow-safe addition.
+It rejects unsupported schema/tool/target/purpose, zero/oversized lengths,
+zero digests, wrong modes, duplicate/case/prefix collisions, nonportable names,
+and incomplete/non-executable/shared tool mappings. Canonical package identity
+binds schema, PostgreSQL major, target, compressed artifact, sorted file
+inventory, and deterministic executable mappings.
+
+### Observed RED → GREEN
+
+All Go commands used `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOWORK=off
+GOENV=off GOTELEMETRY=off`.
+
+- RED: `go test -mod=readonly ./internal/tools -run TestPayload -count=1`
+  failed to build after `payload_test.go` was created because the payload types,
+  constants, sentinels, validation, lookup, and identity functions did not exist.
+- GREEN: the focused suite passed 60 cases after the minimal implementation. One
+  test-only prefix-collision fixture was corrected from a sibling path to an
+  actual case-folded child path; no production behavior was weakened.
+
+Fresh guarded verification passed: `go mod verify`; focused 60-case payload
+suite; full repository suite; `go test -race ./internal/tools`; full `go vet`;
+format/diff/staging checks; and separate compile-only Windows AMD64 and Darwin
+AMD64 `internal/tools` test binaries in a removed private `/tmp` directory.
+
+No payload bytes, extraction, execution, platform changes, dependencies,
+operational commands, downloads, installations, hosted services, commits, or
+pushes were added. Real client acquisition, provenance, licensing, signatures,
+runtime closure, TLS behavior, and native execution remain open gates.
+
+### Task 05 payload follow-up — selected-inventory validation and public package ID
+
+Review found that compiled manifests could be returned without full validation,
+and identity regressions exercised the unchecked hash helper rather than the
+validated `packageID` boundary. A new unexported selector accepts synthetic
+inventories for tests; production lookup delegates to it while its compiled
+inventory remains empty. Any matching manifest is fully validated before return,
+and an invalid selected entry returns the exact non-wrapping `ErrInvalidPayload`.
+
+RED: focused selection/package-ID tests failed to build before `selectPayload`
+existed. GREEN: 20 focused follow-up cases passed after routing production lookup
+through the validating selector. Valid target, purpose, runtime path, length,
+digest, compressed artifact, and unique executable-mapping changes now prove
+`packageID` changes; reordered file inventory and map insertion order preserve the
+ID. Unsupported schema, major, and mode return an empty ID plus the exact invalid
+sentinel.
+
+Fresh guarded verification passed: `go mod verify`; the complete 75-case focused
+payload suite; full repository suite; `go test -race ./internal/tools`; full
+`go vet`; gofmt/diff/staging checks; and separate compile-only Windows AMD64 and
+Darwin AMD64 test binaries in a removed private `/tmp` directory. No production
+payload, fallback path, dependency, network access, commit, or push was added.
+
+### Task 05 payload follow-up — unique selection and closed executable inventory
+
+Quality review found that lookup returned the first matching manifest, an extra
+unmapped executable-purpose file validated, and the canonical encoding lacked a
+fixed-vector regression. Selection now scans every matching major/target entry,
+validates each, and succeeds only for exactly one valid match. Duplicate valid
+entries and mixed valid/invalid duplicates fail with a zero manifest and the
+exact non-wrapping `ErrInvalidPayload` regardless of order. Every executable file
+must now be mapped exactly once by the three approved tool keys.
+
+RED: focused tests reported seven failures: the placeholder golden package ID,
+the accepted unmapped helper executable, and duplicate inventories returning the
+first valid match. GREEN: the focused payload suite passed after the two minimal
+validation changes and pinning the synthetic package ID to
+`3e76db2acc8ac60d86de52653e491624f38a2a114eb198769a18c7688d0c764e`.
+Direct identity checks cover rejected schema version, PostgreSQL major, target OS,
+and file mode changes while confirming validated `packageID` rejection.
