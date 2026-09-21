@@ -2,6 +2,16 @@
 
 **Prepared:** 2026-09-21. **Status:** planning and research only; no new Go implementation exists.
 
+## Name and purpose
+
+The program is named **sparc**, short for **Supabase Project ARChiver**. Its purpose is to:
+
+1. Download the complete contents of a remote hosted Supabase project to a local or remote folder for backup.
+2. Verify a backup folder against its matching remote hosted Supabase project.
+3. Restore a backup folder to a new, empty Supabase project.
+
+The coverage and recovery contracts below define how unsupported features, permissions, and manual requirements are reported rather than silently omitted.
+
 ## What the owner has decided
 
 Build a **fresh Go project in a new public repository**, not a port maintained alongside the Rust product. It is **CLI-only**. The primary user experience is download SPARC on a macOS or Windows laptop, run `sparc backup`, answer necessary prompts, and start backing up a hosted Supabase project. End users must not install Docker, PostgreSQL, Go, Rust, Node, Python, Homebrew, the Supabase CLI, or a separate encryption tool.

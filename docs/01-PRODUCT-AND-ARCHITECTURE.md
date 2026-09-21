@@ -2,6 +2,10 @@
 
 **Date:** 2026-09-21. **Status:** approved product direction plus proposed technical contracts; unproven details are explicitly gated. Read [Start here](00-START-HERE.md) first.
 
+## Product name and purpose
+
+**sparc** means **Supabase Project ARChiver**. The program backs up the complete contents of a remote hosted Supabase project to a local or remote folder, verifies that backup against the matching remote project, and restores it to a new, empty Supabase project.
+
 ## 1. Product promise
 
 Create a portable encrypted recovery package for a hosted Supabase project, report exactly what was captured, and reconstruct supported functionality in a new hosted project without accessing the original project.
