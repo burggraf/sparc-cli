@@ -574,3 +574,78 @@ No extraction, process execution, payload bytes, dependency, operational command
 network/hosted access, installation, commit, or push was added. macOS extended
 ACL qualification and native Windows DACL/reparse/no-replace execution remain
 open gates inherited from Task 04/this slice.
+
+## Task 05, bounded extraction/cache slice — implementation candidate (Task 3)
+
+Added synthetic-only `internal/tools` extraction and cache validation. A seekable
+source is fully length/digest verified before an exclusive crypto-random staging
+directory exists, then re-hashed during extraction. Only one narrow gzip/USTAR
+regular-file stream is accepted. Files are streamed through fixed 32 KiB buffers,
+checked against the compiled manifest, synced/closed, executable headers are
+matched to the declared Mach-O/PE target, and an exact receipt is written last.
+No staging path is launched. Atomic no-replace publication is followed by a full
+receipt, recursive inventory, private mode/DACL, byte/hash, and executable-header
+validation on every return and cache reuse.
+
+### Observed RED → GREEN
+
+- RED: `go test -mod=readonly ./internal/tools -run TestExtractSyntheticPayload
+  -count=1` failed to compile before extraction/cache types and functions existed.
+- GREEN: the first synthetic executable round trip passed after the bounded
+  implementation. Focused follow-up cases then drove strict USTAR epoch handling,
+  second-pass compressed hashing, exact source seek offsets, extra-directory
+  rejection, and close-sensitive full validation.
+
+The focused suite covers missing/extra/duplicate/tampered/truncated entries;
+malformed/checksum-failed/multistream/trailing gzip and tar data; PAX/GNU/link/
+device metadata; wrong executable header/CPU; manifest reorder stability;
+source read/seek/mutation and cancellation; injected write/short-write/sync/close/
+random/publication failures through per-call operations; forged receipts, extra
+files/directories, invalid winners, abandoned staging, eight concurrent goroutine
+contenders, and three independently synchronized helper processes. Failures are
+the fixed non-wrapping `tool extraction failed` sentinel and never repair/delete
+a published invalid winner or another process's staging directory.
+
+Fresh guarded verification passed: offline module verification; focused extraction
+and cache tests; full repository tests; `internal/tools` race tests (including
+helper processes); full vet; formatting/diff checks; and compile-only Windows
+AMD64 plus Darwin AMD64 tools test binaries. Temporary outputs were removed.
+No real client payload, execution path, CLI command, PostgreSQL tool, network,
+download, installation, hosted service, commit, or push was used. Native Windows
+runtime and existing macOS extended-ACL qualification gates remain open.
+
+### Task 05 extraction follow-up — strict source, executable, tar, crash and metadata gates
+
+Specification review found that second-pass compressed validation stopped at the
+manifest length without probing the retained source, executable parsing accepted
+non-executable Mach-O/PE containers, regular USTAR device fields were unchecked,
+tar termination relied on `archive/tar` EOF semantics, crash boundaries lacked
+kill-point proof, and native metadata-only tamper fixtures were incomplete.
+
+RED-first focused fixtures now cover an archive that changes after verification
+to `archive || extra`, Mach-O object/dylib/wrong-CPU mutations, regular USTAR
+nonzero device metadata, zero/one/two/three zero-block terminators, deterministic
+helper kills immediately before and after atomic publication, and Darwin mode-only
+executable/receipt/directory tamper. A Windows-only test mutates the protected
+payload DACL for future native qualification and compiles here without being
+claimed as runtime evidence. Windows parser fixtures mutate PE machine,
+executable/DLL characteristics, and PE32 versus PE32+ optional-header identity.
+
+The second pass now retains the context-aware underlying reader, verifies exact
+limited gzip/hash/tar termination, then requires a direct one-byte probe to return
+`0, io.EOF`. Mach-O requires `TypeExec` plus the declared CPU. Windows requires
+AMD64, `OptionalHeader64`, `IMAGE_FILE_EXECUTABLE_IMAGE`, and no `IMAGE_FILE_DLL`.
+Regular USTAR headers require zero device numbers. Overflow-safe structural
+accounting requires exactly one 512-byte header and padded body per manifest file,
+followed by exactly two zero 512-byte terminator blocks; any shorter or longer
+decompressed stream fails.
+
+Kill helpers use stdin/stdout pipe handshakes with 30-second command contexts and
+per-test cleanup that kills and waits any started child. No sleeps, locks, mutable
+production hooks, or repair paths were added. Before-publication kill leaves no
+destination and one complete private abandoned staging directory; later prepare
+creates a separate valid winner without touching it. After-publication kill leaves
+a fully valid package that reuses without reading source bytes. The focused kill
+test passed under an explicit 60-second Go timeout, and process inspection found
+no surviving helper/test process. The earlier >4-minute combined validation had
+completed; it was broad full/race/cross-compile work rather than a stuck helper.
