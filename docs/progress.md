@@ -649,3 +649,71 @@ a fully valid package that reuses without reading source bytes. The focused kill
 test passed under an explicit 60-second Go timeout, and process inspection found
 no surviving helper/test process. The earlier >4-minute combined validation had
 completed; it was broad full/race/cross-compile work rather than a stuck helper.
+
+## Task 05, native process ownership slice — implementation candidate (Task 4)
+
+Added a fixed-error `internal/platform` process lifecycle with direct absolute-path
+launch, explicit argument/environment/cwd/stdio inputs, asynchronous direct-child
+reaping, repeatable `Wait`, bounded `Terminate`, and idempotent bounded `Close`.
+Invalid paths, controls, nonportable environment keys, case-colliding environment
+entries, nil stdio, and native failures return only the non-wrapping
+`process unavailable` sentinel.
+
+### Observed RED → GREEN
+
+- RED: `go test -mod=readonly ./internal/platform -run '^TestProcess' -count=1`
+  failed to compile before `ProcessSpec`, `Process`, `ErrProcess`, and the lifecycle
+  methods existed.
+- GREEN: focused native macOS tests pass after direct `exec.Cmd` launch with
+  `Setpgid`, negative-group `SIGKILL`, direct-child wait/reap, and bounded common
+  lifecycle coordination. Follow-up RED fixtures drove cancellation/timeout,
+  exact environment isolation, concurrent/repeated lifecycle calls, descriptor
+  accounting, and injected wait/terminate/close failure mapping.
+
+The native Darwin suite launches the test executable directly, preserves exact
+Unicode/space/quote/backslash arguments, proves the supplied environment and cwd
+without ambient inheritance, covers zero/nonzero/failed starts, and uses pipe
+handshakes for endless child+grandchild ownership. Group termination while the
+direct child remains unreaped yields pipe EOF, direct children are no longer
+waitable after `Wait`, and sixteen launch/wait/close cycles preserve `/dev/fd`
+count. No shell, sleep, PATH lookup, mutable global hook, or unbounded process-
+output buffering is used.
+
+Windows code creates a kill-on-close unnamed Job Object first, duplicates only the
+three intended standard handles, creates the explicit application suspended with
+an extended handle allowlist and explicit Unicode environment/cwd, assigns it to
+the job, and only then resumes it. Assignment, resume-count, resume, or thread
+close failures terminate with bounded wait and close every owned handle. Pure
+per-call lifecycle seams compile tests for existing-job assignment, resume, and
+close failure cleanup ordering; they are not native runtime evidence.
+
+Fresh guarded verification passed: offline module verification; 59 native macOS
+platform test/subtest results; ten repeated focused process runs; focused and full
+platform race tests; the full repository suite; full vet; formatting/diff checks;
+and compile/vet-only Windows AMD64 plus compile/vet-only Darwin AMD64 platform
+artifacts in a removed private temporary directory. Native Windows Job Object,
+handle-inheritance, argv, environment, and descendant behavior remain qualification
+gates. Deliberately detached Darwin descendants and abnormal parent death remain
+outside the process-group mechanism. No runner, passfile, CLI command, real client,
+network, download, install, hosted access, commit, or push was added.
+
+A specification-review follow-up made the Windows fault fixtures compare the
+complete assignment/resume/termination/wait/close sequence instead of only a
+cleanup suffix. The assignment-failure case separately asserts that resume is
+never reached, while resume error/count failures remain ordering-sensitive. All
+direct test calls to `Process.Wait`, including Darwin reap loops and concurrent
+waiters, now use one local timeout-bounded helper; wait-group completion has the
+same bounded test contract.
+
+A quality follow-up found that publishing reap state in common code still left a
+gap after native wait returned. Darwin now launches with `os.StartProcess` and
+polls nonblocking `wait4`; one native mutex encloses the actual reap and the group-
+signal decision, while a stopped ticker bounds polling CPU and is always released.
+A gated regression pauses after `wait4` has reaped but before state publication,
+starts termination concurrently, and proves zero kill calls; a live-child fixture
+still observes exactly one negative-group `SIGKILL`. The obsolete common post-wait
+flag was removed. Windows continues to terminate its stable Job Object after
+direct-child wait completion, so its behavior is unchanged. Native Windows runtime
+proof and Darwin deliberately detached-descendant, post-parent-exit descendant,
+and abnormal-parent-death handling remain qualification gates rather than solved
+claims.
