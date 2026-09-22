@@ -979,3 +979,62 @@ detection, resume, remote destinations, public backup/verify/restore commands,
 real payload provenance, PostgreSQL/Supabase behavior, and production inventory
 remain unimplemented. No network, hosted service, real payload, local PostgreSQL
 installation, or cost was involved in Task 07.
+
+## Task 08 — Supabase HTTP transport and project-discovery foundation
+
+**Status:** offline transport/fixture foundation implemented; **not live API
+support**. No Supabase project, token, or network request was used.
+
+`internal/supabase` adds a fixed-endpoint, GET-only client using an explicit
+Management API token. It does not accept a public custom endpoint, disables
+ambient proxies, rejects redirects, uses standard HTTPS verification and a
+30-second timeout, caps response/pagination sizes, returns fixed redacted errors,
+and exposes bounded `Retry-After` without automatically retrying. Its candidate
+`GET /projects?limit=100&offset=N` fixture parses required project identity fields
+and an optional candidate `db_version`; unknown keys are surfaced by name only.
+Missing database version and feature inventory remain explicitly unknown. A
+successful empty list is distinct from 403 permission denial. No API body is
+persisted. The transport is not connected to the CLI and no project features are
+claimed as discovered.
+
+`docs/research/R10-api-contracts.md` records that the endpoint, pagination, field
+schema, version field, permission scope, and feature discovery have **not** been
+revalidated against current official documentation. The feature endpoint and
+feature schema remain unimplemented rather than inferred from unknown fields.
+`docs/research/R16-login.md` documents token-only intent, separate credential
+roles, no token persistence, and no embedded OAuth client secret/browser flow.
+Fresh owner approval is required before any public-doc network lookup or hosted
+read test; hosted access is not needed for these offline tests.
+
+### TDD and offline contract evidence
+
+- **Red:** Before implementation, `go test ./internal/supabase -count=1` failed
+to build because the tested `NewClient`, endpoint constants, error types, and
+project/capability types were not defined.
+- **Green:** The offline `httptest` cases cover fixed route and Bearer header,
+no ambient proxy, redirect refusal/no cross-origin credential forwarding,
+timeout, response and pagination bounds, 401/403/404/429/503 mapping,
+`Retry-After` parsing/capping, malformed JSON/duplicate keys/control characters/
+unpaired surrogates, unknown-field-name-only handling, and error redaction.
+Empty successful discovery and permission denial are asserted separately.
+
+### Guarded validation
+
+All checks used `GOTOOLCHAIN=local`, `GOPROXY=off`, `GOSUMDB=off`, `GOWORK=off`,
+`GOENV=off`, `GOFLAGS=`, and `GOTELEMETRY=off`:
+
+- `go mod verify` — passed.
+- `go test -mod=readonly ./internal/supabase -count=1 -v` — passed.
+- `go test -mod=readonly -race ./internal/supabase -count=1` — passed.
+- `go test -mod=readonly ./... -count=1 -timeout=240s` — passed.
+- `go test -mod=readonly -race ./... -count=1 -timeout=300s` — passed.
+- `go vet -mod=readonly ./...` and `go build -mod=readonly -o /tmp/sparc-task08 ./cmd/sparc` — passed; temporary output removed.
+- Supabase package test binaries cross-compiled for Windows AMD64 and Darwin AMD64/arm64; compile evidence only, binaries removed without execution.
+- `gofmt` and `git diff --check` — clean.
+
+**Remaining gate:** verify the candidate GET route, actual pagination and response
+schema, token permissions, version discovery, and any feature endpoint against
+current official documentation under owner authorization before describing this
+client as compatible with Supabase. No password reset, role creation, setting
+change, OAuth, database connection, service credential, or project mutation was
+implemented.
