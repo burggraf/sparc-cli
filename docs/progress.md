@@ -885,3 +885,48 @@ All commands below exited 0 under `GOTOOLCHAIN=local`, `GOPROXY=off`,
   Markdown-link checks
 - Compile-only credentials/tools/platform test binaries for Windows AMD64 and
   Darwin AMD64/arm64; those binaries were removed and never executed.
+
+## Task 06, passphrase-only local archive primitive — implementation candidate
+
+Added the versioned `sparc-archive` local format and `internal/archive` package.
+Each stream is encrypted independently with `filippo.io/age` scrypt encryption.
+Payload filenames are opaque contiguous IDs (`00000000.age`, and so on); the
+encrypted `manifest.age` is exclusive and published only after every payload
+stream completed. Its absence means incomplete output, not an empty archive.
+The encrypted manifest records an opaque ID, Unicode-preserved logical key,
+scope, status, exact plaintext length, and SHA-256 digest. It rejects duplicate
+or unknown JSON fields, duplicate keys/IDs, unsupported versions, non-integer
+lengths, invalid IDs/keys/digests, and bounded-size/count/depth violations.
+
+The selected recovery model is passphrase-only. Passphrases are nonempty,
+valid UTF-8, control-free, and at most 4,096 bytes; they are never added to
+filenames, manifests, argv, or normal diagnostics. The archive primitive has
+no sender-authentication claim. It encrypts but does not establish artifact
+provenance or author identity.
+
+Tests cover zero-byte, one-byte, multi-chunk, and generated 8 MiB streams;
+wrong/unsafe passphrases; truncation/corruption; finalization-write failure;
+direct age-library decryption; duplicate/unknown/oversize manifest input;
+Unicode logical-key preservation; payload and manifest round trips; an absent
+manifest after source failure; and refusal before writing into an existing
+manifest directory. The allocation benchmark uses a generated 8 MiB stream
+rather than a large plaintext slice: on Apple M1/Darwin arm64,
+`BenchmarkEncryptLargeStream` ran once in 472,342,708 ns with 268,715,704 bytes
+and 127 allocations. This measures scrypt setup plus encryption; it is not a
+scale/support claim.
+
+Final guarded validation exited 0 under `GOTOOLCHAIN=local`, `GOPROXY=off`,
+`GOSUMDB=off`, `GOWORK=off`, `GOENV=off`, `GOFLAGS=`, and `GOTELEMETRY=off`:
+`go mod verify`; `go test -mod=readonly ./internal/archive
+-count=1 -v`; `go test -mod=readonly -race ./internal/archive -count=1`;
+`go test -mod=readonly ./... -count=1 -timeout=180s`; `go vet -mod=readonly
+./...`; `go build -mod=readonly ./cmd/sparc`; `gofmt` and `git diff --check`;
+and compile-only archive test binaries for Windows AMD64 and Darwin AMD64/arm64.
+Those cross-compiled test binaries were removed without execution.
+
+No local destination privacy/no-clobber implementation, reader/offline verifier,
+source-mutation detection, resume journal, remote destination, real payload,
+PostgreSQL connection, network service, hosted project, or Supabase operation
+was added. Owner authorization remains required before real payload work,
+release/signing costs, PostgreSQL installation, native-machine provisioning, or
+hosted testing.
