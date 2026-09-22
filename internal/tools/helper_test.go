@@ -4,12 +4,61 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"testing"
 
 	"github.com/burggraf/sparc-cli/internal/platform"
 )
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if preparedRunFixture.tempRoot != "" {
+		_ = os.RemoveAll(preparedRunFixture.tempRoot)
+	}
+	os.Exit(code)
+}
+
+func init() {
+	if os.Getenv("SPARC_RUN_RETAINED_PIPE_CHILD") == "1" {
+		for {
+			runtime.Gosched()
+		}
+	}
+	mode, err := os.ReadFile(".sparc-run-test-mode")
+	if err != nil {
+		return
+	}
+	switch string(mode) {
+	case "report":
+		_ = json.NewEncoder(os.Stdout).Encode(struct {
+			Args []string `json:"args"`
+			Path string   `json:"path"`
+		}{Args: os.Args[1:], Path: os.Args[0]})
+	case "large":
+		data := bytes.Repeat([]byte{'x'}, 4*runBufferBytes)
+		done := make(chan struct{}, 2)
+		go func() { _, _ = os.Stdout.Write(data); done <- struct{}{} }()
+		go func() { _, _ = os.Stderr.Write(data); done <- struct{}{} }()
+		<-done
+		<-done
+	case "retained-pipe":
+		child := exec.Command(os.Args[0])
+		child.Env = append(os.Environ(), "SPARC_RUN_RETAINED_PIPE_CHILD=1")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			os.Exit(117)
+		}
+		_, _ = os.Stdout.Write([]byte("parent\n"))
+	default:
+		return
+	}
+	os.Exit(0)
+}
 
 func TestExtractHelperProcess(t *testing.T) {
 	if os.Getenv("SPARC_EXTRACT_HELPER") != "1" {

@@ -16,7 +16,10 @@ import (
 // exposed through this boundary.
 var ErrProcess = errors.New("process unavailable")
 
-const processCloseTimeout = 5 * time.Second
+const (
+	processCloseTimeout       = 5 * time.Second
+	processCleanupRetryPeriod = 10 * time.Millisecond
+)
 
 type ProcessSpec struct {
 	Path                  string
@@ -35,13 +38,14 @@ type Process struct {
 	native nativeProcess
 	done   chan struct{}
 
-	resultMu  sync.Mutex
-	exitCode  int
-	waitErr   error
-	terminate sync.Once
-	termErr   error
-	close     sync.Once
-	closeErr  error
+	resultMu sync.Mutex
+	exitCode int
+	waitErr  error
+
+	terminateMu sync.Mutex
+	closeMu     sync.Mutex
+	closed      bool
+	closeErr    error
 }
 
 func StartProcess(spec ProcessSpec) (*Process, error) {
@@ -85,8 +89,15 @@ func (p *Process) Terminate(ctx context.Context) error {
 	if p == nil || p.native == nil || ctx == nil {
 		return ErrProcess
 	}
-	p.terminateNative()
-	if p.termErr != nil {
+	select {
+	case <-p.done:
+		if p.processWaitErr() != nil {
+			return ErrProcess
+		}
+		return nil
+	default:
+	}
+	if p.terminateNative() != nil {
 		return ErrProcess
 	}
 	select {
@@ -101,26 +112,52 @@ func (p *Process) Terminate(ctx context.Context) error {
 }
 
 func (p *Process) Close() error {
-	if p == nil || p.native == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), processCloseTimeout)
+	defer cancel()
+	return p.CloseContext(ctx)
+}
+
+// CloseContext terminates, reaps, and releases the owned native process. The
+// context bounds normal cleanup; after it expires, cleanup fails closed and
+// continues until process ownership is resolved. It is safe to call repeatedly.
+func (p *Process) CloseContext(ctx context.Context) error {
+	if p == nil || p.native == nil || ctx == nil {
 		return ErrProcess
 	}
-	p.close.Do(func() {
-		p.terminateNative()
-		ctx, cancel := context.WithTimeout(context.Background(), processCloseTimeout)
-		defer cancel()
-		waitErr := error(nil)
+	p.closeMu.Lock()
+	defer p.closeMu.Unlock()
+	if p.closed {
+		return p.closeErr
+	}
+
+	failed := false
+	for {
 		select {
 		case <-p.done:
-			waitErr = p.processWaitErr()
+			if p.processWaitErr() != nil || p.native.closeProcess() != nil {
+				failed = true
+			}
+			p.closed = true
+			if failed {
+				p.closeErr = ErrProcess
+			}
+			return p.closeErr
+		default:
+		}
+
+		if p.terminateNative() != nil {
+			failed = true
+		}
+		timer := time.NewTimer(processCleanupRetryPeriod)
+		select {
+		case <-p.done:
+			timer.Stop()
 		case <-ctx.Done():
-			waitErr = ErrProcess
+			failed = true
+			<-timer.C
+		case <-timer.C:
 		}
-		nativeCloseErr := p.native.closeProcess()
-		if p.termErr != nil || waitErr != nil || nativeCloseErr != nil {
-			p.closeErr = ErrProcess
-		}
-	})
-	return p.closeErr
+	}
 }
 
 func (p *Process) processWaitErr() error {
@@ -129,12 +166,10 @@ func (p *Process) processWaitErr() error {
 	return p.waitErr
 }
 
-func (p *Process) terminateNative() {
-	p.terminate.Do(func() {
-		if err := p.native.terminateProcess(); err != nil {
-			p.termErr = ErrProcess
-		}
-	})
+func (p *Process) terminateNative() error {
+	p.terminateMu.Lock()
+	defer p.terminateMu.Unlock()
+	return p.native.terminateProcess()
 }
 
 func validProcessSpec(spec ProcessSpec) bool {

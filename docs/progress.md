@@ -706,14 +706,128 @@ waiters, now use one local timeout-bounded helper; wait-group completion has the
 same bounded test contract.
 
 A quality follow-up found that publishing reap state in common code still left a
-gap after native wait returned. Darwin now launches with `os.StartProcess` and
-polls nonblocking `wait4`; one native mutex encloses the actual reap and the group-
-signal decision, while a stopped ticker bounds polling CPU and is always released.
-A gated regression pauses after `wait4` has reaped but before state publication,
-starts termination concurrently, and proves zero kill calls; a live-child fixture
-still observes exactly one negative-group `SIGKILL`. The obsolete common post-wait
-flag was removed. Windows continues to terminate its stable Job Object after
-direct-child wait completion, so its behavior is unchanged. Native Windows runtime
-proof and Darwin deliberately detached-descendant, post-parent-exit descendant,
-and abnormal-parent-death handling remain qualification gates rather than solved
-claims.
+gap after native wait returned. Darwin now launches with `os.StartProcess`, polls
+kqueue `NOTE_EXIT`, and uses Sysctl zombie state as the registration-race fallback.
+One native mutex encloses the group-signal and reap decision, while a stopped ticker
+bounds polling CPU and is always released. After exit is observed, Darwin sends a
+negative-group `SIGKILL` while the direct leader remains unreaped, then performs the
+blocking `wait4`, marks the child reaped, releases the process handle, and closes the
+kqueue descriptor. A gated regression pauses after `wait4` has reaped but before
+state publication and starts termination concurrently; no later signal is sent after
+`ECHILD`. A deterministic helper proves a parent may exit after its grandchild is
+ready and the owned group still closes the retained pipe; injected residual-group
+kill failure fails closed. Live termination remains covered and late termination
+cannot signal a reaped numeric PGID. Windows continues to terminate its stable Job Object after direct-child wait
+completion. Its suspended-start failure path now retries direct termination and,
+after successful assignment, Job termination plus a paced wait until direct-child
+exit is confirmed before any child or Job handle closes. Native Windows runtime
+proof, deliberately detached Darwin descendants, and abnormal-parent-death handling
+remain qualification gates.
+
+## Task 05, bounded streaming execution slice — implementation candidate (Task 5)
+
+Added synthetic-only `internal/tools` typed version execution. Public callers supply
+only `Tool`, positive operation/cleanup timeouts, byte limits, and a cancellation-
+aware stdout sink; arbitrary executable paths, args, cwd, environment, and stdin
+are not accepted. The public production route selects a compiled manifest for the
+native target and full-revalidates its private cached package and mapped executable
+before launch. Production inventory is still empty, so this cannot run a real
+client or claim PostgreSQL support.
+
+Only `--version` is currently admitted. Connected invocation is deliberately
+rejected until Task 6 can supply its scoped passfile and structured connection
+boundary. Each run receives a crypto-random private operation directory with
+private home/temp/config subdirectories, an explicit fixed locale, no inherited
+PATH/PG/loader/proxy/credential/HOME values, a direct executable path, explicit
+private cwd, and EOF stdin. No ambient `SystemRoot` is forwarded on Windows; the
+direct native launch uses no shell or PATH lookup.
+
+Stdout and discarded stderr each stream through one fixed 32 KiB buffer with
+separate exact byte ceilings. Exact limits succeed; one-byte excess, partial or
+failed sink writes, read failures, and sink close failure use the fixed
+non-wrapping `tool output failed` or `tool run failed` errors without native,
+path, argument, or secret text. Successful results expose exact final counts only
+after all workers join; every error returns a zero result, while stdout may already
+contain only its bounded permitted prefix. Once a valid request is accepted, one outer lifecycle owner context-closes the
+sink exactly once even when production inventory lookup, validation, setup, or
+pre-start cancellation fails. On cancellation, timeout, output failure, nonzero
+exit, or lifecycle failure, finalization cancels the run, closes parent pipe
+handles, terminates and context-closes the owned process, joins the waiter and both
+pumps, and closes every owned descriptor once. `CleanupTimeout`, capped at five
+seconds, bounds normal cleanup and sink close. If
+an owned process tree is not terminated and reaped at expiration, cleanup fails
+closed and explicitly overruns that budget while retrying hard termination with
+bounded polling until process ownership, the waiter, native handles, and pumps are
+resolved. `OutputSink` requires both `WriteContext` and `CloseContext`, so blocked
+output and close operations honor the normal cancellation boundary without an
+unkillable close goroutine.
+
+### Observed RED → GREEN
+
+- RED: `go test -mod=readonly ./internal/tools -run '^TestRun' -count=1` failed
+  before the typed request/result, bounded pumps, and runner existed.
+- GREEN: focused tests prove exact `--version` argv, hostile ambient-environment
+  exclusion, explicit operation cwd and standard streams, empty production
+  inventory behavior, invalid/pre-start cancellation rejection, nonzero/wait/start/
+  termination/close failure mapping, exact successful counts, one-byte output
+  ceilings with bounded stdout prefixes and zero failure results, short/failed/synchronously blocked cancellation-aware
+  sinks, caller cancellation, setup timeout, descriptor/pipe/read/close failures,
+  simultaneous large stdout+stderr, unique concurrent operation directories with
+  removal, and an actual copied synthetic test executable invoked directly.
+
+Fresh guarded checks passed: focused runner tests; focused tools race tests; tools,
+platform, and credentials tests; full suite; full vet; format/diff checks; and
+Windows AMD64 plus Darwin AMD64 tools compile checks (Windows vet too). No real
+payload, PostgreSQL client, operational CLI command, passfile, network/download,
+installation, hosted service, commit, or push was used. Native Windows Job Object
+and existing macOS extended-ACL qualification gates remain open; synthetic helper
+execution proves mechanisms only, not PostgreSQL provenance, dependency loading,
+or Supabase compatibility.
+
+A narrow P0 cleanup repair removed one-shot termination poisoning. Process
+termination is serialized but retryable; Darwin keeps direct-child reap and
+negative-group kill ownership under one native mutex and retries transient group
+kill failures with bounded polling. `CloseContext` records normal-deadline expiry
+as failure but does not return while its waiter or native ownership remains live.
+Runner finalization defensively repeats hard close without a deadline after a
+bounded close failure, then joins all waiter/pump result channels. Deterministic
+fail-once Darwin and runner regressions prove the first failed kill/close cannot
+release the result early, and the retained-pipe descendant regression remains the
+end-to-end ownership check. This security-first exceptional cleanup can exceed
+`CleanupTimeout`; a permanently unresolvable native kill intentionally fail-stops
+rather than returning with an owned process tree.
+
+### Task 05 P1/P2 follow-up — deterministic failed results and runner documentation
+
+Runner failures now return a zero `RunResult`, so concurrent stdout/stderr completion
+order cannot expose speculative sibling-stream counts. The stdout pump still reads
+at most `remaining+1` and forwards exactly its permitted prefix before its own
+overflow; a failed run cannot retract a prefix already accepted by the sink.
+Repeated concurrent one-stream and two-stream overflow regressions assert the same
+zero result and exact bounded stdout prefix. Partial-positive sink writes with nil
+or error outcomes assert fixed `ErrOutput`, zero public results, and their actual
+accepted prefix. Every stdout/stderr read-only or write-only pipe-plus-error setup
+owns and closes each returned descriptor exactly once and returns fixed `ErrRun`.
+
+RED: the new focused runner cases failed against retained partial byte counts on
+errors. GREEN: after changing only final result publication, the focused accounting,
+partial-write, and one-sided-pipe cases passed, followed by the complete `TestRun`
+suite. No process retry behavior was changed.
+
+Fresh guarded validation used offline/local module settings: the complete focused
+`TestRun` suite passed; tools/platform/credentials compile-only tests and targeted
+vet passed; the CLI built natively; tools test binaries compiled for Windows AMD64
+and Darwin AMD64 without execution; formatting and `git diff --check` passed. No
+full-suite or race loop was run in this follow-up.
+
+The complete Task 05 mechanism boundary, layouts, diagnostics, output/lifecycle
+policy, environment isolation, TOCTOU boundary, and proof limits are now summarized
+in [`docs/tools.md`](tools.md).
+
+Task 6 remains unimplemented: there is no PostgreSQL passfile lifecycle or structured
+connected invocation. Qualification still requires native Windows Job Object,
+handle-inheritance, argv/environment, DACL/reparse, and descendant runtime evidence;
+macOS extended/inherited ACL evidence; detached-Darwin and abnormal-parent-death
+handling decisions/evidence; and real PostgreSQL payload provenance, redistribution,
+signing/notarization, dependency loading, TLS, noninteractive, and Supabase
+compatibility evidence. Current execution proof remains synthetic only.

@@ -123,10 +123,7 @@ func TestProcessRejectsInvalidSpecAndFailedStart(t *testing.T) {
 }
 
 func TestProcessTerminateEndlessTreeAndRetainedPipe(t *testing.T) {
-	modes := []string{"tree"}
-	if runtime.GOOS == "windows" {
-		modes = append(modes, "detached-parent")
-	}
+	modes := []string{"tree", "detached-parent"}
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
 			files, stdout := pipeFiles(t)
@@ -202,8 +199,8 @@ func TestProcessCancellationAndInjectedFailures(t *testing.T) {
 	if _, err := waitProcessDeadline(t, process); err != nil {
 		t.Fatal(err)
 	}
-	if err := process.Close(); err != ErrProcess {
-		t.Fatalf("Close = %v", err)
+	if err := process.Close(); err != nil {
+		t.Fatalf("Close after retryable termination failure = %v", err)
 	}
 
 	closeFailure := &fakeNativeProcess{wait: closedChannel(), closeErr: errors.New("secret-canary-close")}
@@ -269,15 +266,15 @@ type helperReport struct {
 }
 
 func TestProcessHelper(t *testing.T) {
-	if os.Getenv("SPARC_PROCESS_HELPER") == "" {
-		t.Skip("helper process")
-	}
 	separator := -1
 	for i, arg := range os.Args {
 		if arg == "--" {
 			separator = i
 			break
 		}
+	}
+	if os.Getenv("SPARC_PROCESS_HELPER") == "" && (separator < 0 || separator+1 >= len(os.Args) || os.Args[separator+1] != "report-empty-env") {
+		t.Skip("helper process")
 	}
 	if separator < 0 || separator+1 >= len(os.Args) {
 		os.Exit(111)
@@ -287,7 +284,7 @@ func TestProcessHelper(t *testing.T) {
 	case "exit":
 		code, _ := strconv.Atoi(arguments[1])
 		os.Exit(code)
-	case "report":
+	case "report", "report-empty-env":
 		directory, err := os.Getwd()
 		if err != nil {
 			os.Exit(112)
@@ -297,11 +294,18 @@ func TestProcessHelper(t *testing.T) {
 			os.Exit(113)
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(helperReport{Args: arguments[1:], Value: os.Getenv("ONLY_VALUE"), Ambient: os.Getenv("SPARC_AMBIENT_CANARY"), Dir: directory, Path: executable})
-	case "hold":
+	case "hold", "hold-ready":
+		if arguments[0] == "hold-ready" {
+			_ = os.WriteFile(".sparc-process-child-ready", []byte("ready"), 0o600)
+		}
 		_, _ = os.Stdout.Write([]byte{'R'})
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	case "tree", "detached-parent":
-		command := exec.Command(os.Args[0], "-test.run=^TestProcessHelper$", "--", "hold")
+		childMode := "hold"
+		if arguments[0] == "detached-parent" {
+			childMode = "hold-ready"
+		}
+		command := exec.Command(os.Args[0], "-test.run=^TestProcessHelper$", "--", childMode)
 		command.Env = []string{"SPARC_PROCESS_HELPER=1"}
 		command.Stdin = os.Stdin
 		command.Stdout = os.Stdout
@@ -310,7 +314,16 @@ func TestProcessHelper(t *testing.T) {
 			os.Exit(114)
 		}
 		if arguments[0] == "detached-parent" {
-			os.Exit(0)
+			deadline := time.Now().Add(processTestTimeout)
+			for {
+				if _, err := os.Stat(".sparc-process-child-ready"); err == nil {
+					os.Exit(0)
+				}
+				if time.Now().After(deadline) {
+					os.Exit(116)
+				}
+				runtime.Gosched()
+			}
 		}
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	default:

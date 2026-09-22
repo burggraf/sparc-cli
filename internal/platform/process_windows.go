@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -15,6 +16,7 @@ import (
 const (
 	processTerminationExitCode = 0x53504152 // "SPAR"
 	processCleanupMilliseconds = 5000
+	processCleanupRetryDelay   = 10 * time.Millisecond
 )
 
 type windowsStartOps struct {
@@ -23,6 +25,7 @@ type windowsStartOps struct {
 	terminateJob     func(windows.Handle, uint32) error
 	terminateProcess func(windows.Handle, uint32) error
 	wait             func(windows.Handle, uint32) (uint32, error)
+	sleep            func(time.Duration)
 	close            func(windows.Handle) error
 }
 
@@ -30,7 +33,7 @@ func defaultWindowsStartOps() windowsStartOps {
 	return windowsStartOps{
 		assign: windows.AssignProcessToJobObject, resume: windows.ResumeThread,
 		terminateJob: windows.TerminateJobObject, terminateProcess: windows.TerminateProcess,
-		wait: windows.WaitForSingleObject, close: windows.CloseHandle,
+		wait: windows.WaitForSingleObject, sleep: time.Sleep, close: windows.CloseHandle,
 	}
 }
 
@@ -132,7 +135,7 @@ func startNativeProcess(spec ProcessSpec) (nativeProcess, error) {
 	}
 	ops := defaultWindowsStartOps()
 	if standardCloseErr != nil {
-		cleanupWindowsStartFailure(job, information, ops)
+		cleanupWindowsStartFailure(job, information, false, ops)
 		return nil, standardCloseErr
 	}
 	return finishWindowsStart(job, information, ops)
@@ -184,29 +187,37 @@ func windowsEnvironment(entries []string) ([]uint16, error) {
 
 func finishWindowsStart(job windows.Handle, information windows.ProcessInformation, ops windowsStartOps) (nativeProcess, error) {
 	if err := ops.assign(job, information.Process); err != nil {
-		cleanupWindowsStartFailure(job, information, ops)
+		cleanupWindowsStartFailure(job, information, false, ops)
 		return nil, err
 	}
 	previous, err := ops.resume(information.Thread)
 	if err != nil || previous != 1 {
-		cleanupWindowsStartFailure(job, information, ops)
+		cleanupWindowsStartFailure(job, information, true, ops)
 		if err != nil {
 			return nil, err
 		}
 		return nil, windows.ERROR_INVALID_STATE
 	}
 	if err := ops.close(information.Thread); err != nil {
-		cleanupWindowsStartFailure(job, information, ops)
+		cleanupWindowsStartFailure(job, information, true, ops)
 		return nil, err
 	}
 	return &windowsProcess{process: information.Process, job: job}, nil
 }
 
-func cleanupWindowsStartFailure(job windows.Handle, information windows.ProcessInformation, ops windowsStartOps) {
-	_ = ops.terminateJob(job, processTerminationExitCode)
+func cleanupWindowsStartFailure(job windows.Handle, information windows.ProcessInformation, assigned bool, ops windowsStartOps) {
 	if information.Process != 0 {
-		_ = ops.terminateProcess(information.Process, processTerminationExitCode)
-		_, _ = ops.wait(information.Process, processCleanupMilliseconds)
+		for {
+			if assigned {
+				_ = ops.terminateJob(job, processTerminationExitCode)
+			}
+			_ = ops.terminateProcess(information.Process, processTerminationExitCode)
+			result, err := ops.wait(information.Process, processCleanupMilliseconds)
+			if err == nil && result == windows.WAIT_OBJECT_0 {
+				break
+			}
+			ops.sleep(processCleanupRetryDelay)
+		}
 	}
 	if information.Thread != 0 {
 		_ = ops.close(information.Thread)
@@ -224,8 +235,9 @@ func (p *windowsProcess) waitProcess() (int, error) {
 	if waitErr == nil && result == windows.WAIT_OBJECT_0 {
 		exitErr = windows.GetExitCodeProcess(p.process, &code)
 	}
+	terminateErr := windows.TerminateJobObject(p.job, processTerminationExitCode)
 	closeErr := windows.CloseHandle(p.process)
-	if waitErr != nil || result != windows.WAIT_OBJECT_0 || exitErr != nil || closeErr != nil {
+	if waitErr != nil || result != windows.WAIT_OBJECT_0 || exitErr != nil || terminateErr != nil || closeErr != nil {
 		return -1, ErrProcess
 	}
 	return int(code), nil

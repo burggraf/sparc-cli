@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -14,11 +15,11 @@ import (
 func TestProcessWindowsAssignmentAndResumeFailuresCleanUp(t *testing.T) {
 	terminationCode := strconv.FormatUint(processTerminationExitCode, 10)
 	cleanup := []string{
-		"terminate-job:" + terminationCode,
 		"terminate-process:" + terminationCode,
 		"wait:" + strconv.Itoa(processCleanupMilliseconds),
 		"close:3", "close:2", "close:1",
 	}
+	assignedCleanup := append([]string{"terminate-job:" + terminationCode}, cleanup...)
 	for _, test := range []struct {
 		name          string
 		assignErr     error
@@ -34,15 +35,15 @@ func TestProcessWindowsAssignmentAndResumeFailuresCleanUp(t *testing.T) {
 		},
 		{
 			name: "resume error", resumeErr: errors.New("resume"),
-			want: append([]string{"assign:1:2", "resume:3"}, cleanup...),
+			want: append([]string{"assign:1:2", "resume:3"}, assignedCleanup...),
 		},
 		{
 			name: "unexpected suspend count", resume: 2,
-			want: append([]string{"assign:1:2", "resume:3"}, cleanup...),
+			want: append([]string{"assign:1:2", "resume:3"}, assignedCleanup...),
 		},
 		{
 			name: "thread close error", resume: 1, closeError: true,
-			want: append([]string{"assign:1:2", "resume:3", "close:3"}, cleanup...),
+			want: append([]string{"assign:1:2", "resume:3", "close:3"}, assignedCleanup...),
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -91,6 +92,72 @@ func TestProcessWindowsAssignmentAndResumeFailuresCleanUp(t *testing.T) {
 			}
 			if !reflect.DeepEqual(calls, test.want) {
 				t.Fatalf("calls = %#v; want exact sequence %#v", calls, test.want)
+			}
+		})
+	}
+}
+
+func TestProcessWindowsStartCleanupRetriesUntilExitBeforeClosingHandles(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		assigned   bool
+		firstWait  uint32
+		firstError error
+	}{
+		{name: "unassigned timeout", firstWait: uint32(windows.WAIT_TIMEOUT)},
+		{name: "assigned wait error", assigned: true, firstWait: windows.WAIT_FAILED, firstError: errors.New("wait")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls []string
+			waitCalls := 0
+			confirmedExit := false
+			ops := windowsStartOps{
+				terminateJob: func(windows.Handle, uint32) error {
+					calls = append(calls, "terminate-job")
+					return nil
+				},
+				terminateProcess: func(windows.Handle, uint32) error {
+					calls = append(calls, "terminate-process")
+					if waitCalls == 0 {
+						return errors.New("transient terminate failure")
+					}
+					return nil
+				},
+				wait: func(windows.Handle, uint32) (uint32, error) {
+					calls = append(calls, "wait")
+					waitCalls++
+					if waitCalls == 1 {
+						return test.firstWait, test.firstError
+					}
+					confirmedExit = true
+					return windows.WAIT_OBJECT_0, nil
+				},
+				sleep: func(delay time.Duration) {
+					if delay != processCleanupRetryDelay {
+						t.Fatalf("retry delay = %v", delay)
+					}
+					calls = append(calls, "sleep")
+				},
+				close: func(handle windows.Handle) error {
+					if !confirmedExit {
+						t.Fatalf("handle %d closed before confirmed process exit", handle)
+					}
+					calls = append(calls, "close:"+strconv.FormatUint(uint64(handle), 10))
+					return nil
+				},
+			}
+
+			cleanupWindowsStartFailure(1, windows.ProcessInformation{Process: 2, Thread: 3}, test.assigned, ops)
+			want := []string{"terminate-process", "wait", "sleep", "terminate-process", "wait", "close:3", "close:2", "close:1"}
+			if test.assigned {
+				want = []string{
+					"terminate-job", "terminate-process", "wait", "sleep",
+					"terminate-job", "terminate-process", "wait",
+					"close:3", "close:2", "close:1",
+				}
+			}
+			if !reflect.DeepEqual(calls, want) {
+				t.Fatalf("calls = %#v; want %#v", calls, want)
 			}
 		})
 	}
