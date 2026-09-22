@@ -10,6 +10,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -18,6 +19,7 @@ const (
 	Version          = 1
 	maxManifestBytes = 16 << 20
 	maxComponents    = 100_000
+	maxManifestDepth = 8
 	maxScopeBytes    = 4096
 	maxTotalBytes    = 128 << 30
 )
@@ -51,11 +53,12 @@ func (m Manifest) Validate() error {
 		if _, ok := seenIDs[c.ID]; ok {
 			return errors.New("duplicate archive component")
 		}
-		if _, ok := seenKeys[c.Key]; ok {
+		foldedKey := portableFold(c.Key)
+		if _, ok := seenKeys[foldedKey]; ok {
 			return errors.New("duplicate archive logical key")
 		}
 		seenIDs[c.ID] = struct{}{}
-		seenKeys[c.Key] = struct{}{}
+		seenKeys[foldedKey] = struct{}{}
 		total += c.Length
 		if len(c.SHA256) != sha256.Size*2 || strings.ToLower(c.SHA256) != c.SHA256 {
 			return errors.New("invalid archive digest")
@@ -75,6 +78,12 @@ func ParseManifest(r io.Reader) (Manifest, error) {
 	if len(data) > maxManifestBytes {
 		return Manifest{}, errors.New("archive manifest exceeds size limit")
 	}
+	if !utf8.Valid(data) || !validSurrogateEscapes(data) {
+		return Manifest{}, errors.New("invalid archive manifest Unicode")
+	}
+	if err := checkManifestDepth(data); err != nil {
+		return Manifest{}, err
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	m, err := parseManifestObject(dec)
@@ -88,6 +97,87 @@ func ParseManifest(r io.Reader) (Manifest, error) {
 		return Manifest{}, err
 	}
 	return m, nil
+}
+
+func validSurrogateEscapes(data []byte) bool {
+	inString := false
+	for i := 0; i < len(data); {
+		if !inString {
+			inString = data[i] == '"'
+			i++
+			continue
+		}
+		if data[i] == '"' {
+			inString = false
+			i++
+			continue
+		}
+		if data[i] != '\\' {
+			i++
+			continue
+		}
+		if i+1 >= len(data) {
+			return false
+		}
+		if data[i+1] != 'u' {
+			i += 2
+			continue
+		}
+		if i+6 > len(data) {
+			return false
+		}
+		value, err := strconv.ParseUint(string(data[i+2:i+6]), 16, 16)
+		if err != nil {
+			return false
+		}
+		switch {
+		case value >= 0xd800 && value <= 0xdbff:
+			if i+12 > len(data) || data[i+6] != '\\' || data[i+7] != 'u' {
+				return false
+			}
+			low, err := strconv.ParseUint(string(data[i+8:i+12]), 16, 16)
+			if err != nil || low < 0xdc00 || low > 0xdfff {
+				return false
+			}
+			i += 12
+		case value >= 0xdc00 && value <= 0xdfff:
+			return false
+		default:
+			i += 6
+		}
+	}
+	return !inString
+}
+
+func checkManifestDepth(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	depth := 0
+	for {
+		token, err := dec.Token()
+		if err == io.EOF {
+			if depth != 0 {
+				return errors.New("invalid archive manifest")
+			}
+			return nil
+		}
+		if err != nil {
+			return errors.New("invalid archive manifest")
+		}
+		if delimiter, ok := token.(json.Delim); ok {
+			switch delimiter {
+			case '{', '[':
+				depth++
+				if depth > maxManifestDepth {
+					return errors.New("archive manifest exceeds nesting limit")
+				}
+			case '}', ']':
+				depth--
+				if depth < 0 {
+					return errors.New("invalid archive manifest")
+				}
+			}
+		}
+	}
 }
 
 func parseManifestObject(dec *json.Decoder) (Manifest, error) {
@@ -226,16 +316,43 @@ func validKey(key string) bool {
 		return false
 	}
 	for _, part := range parts {
-		if part == "" || part == "." || part == ".." {
+		if part == "" || part == "." || part == ".." || len(part) > 255 || strings.ContainsAny(part, `<>:"|?*`) || strings.HasSuffix(part, ".") || strings.HasSuffix(part, " ") || windowsDeviceName(part) {
 			return false
 		}
 	}
 	return true
 }
 
+func windowsDeviceName(part string) bool {
+	base := strings.ToUpper(strings.SplitN(part, ".", 2)[0])
+	switch base {
+	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
+		return true
+	}
+	if strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT") {
+		suffix := []rune(base)[3:]
+		return len(suffix) == 1 && strings.ContainsRune("123456789¹²³", suffix[0])
+	}
+	return false
+}
+
+func portableFold(value string) string {
+	var folded strings.Builder
+	for _, r := range value {
+		min := r
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			if next < min {
+				min = next
+			}
+		}
+		folded.WriteRune(min)
+	}
+	return folded.String()
+}
+
 func hasControl(s string) bool {
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r == 0x7f || r == '\u2028' || r == '\u2029' {
 			return true
 		}
 	}

@@ -9,7 +9,10 @@ import (
 	"filippo.io/age"
 )
 
-const maxPassphraseLength = 4096
+const (
+	maxPassphraseLength    = 4096
+	maxAgeScryptWorkFactor = 18
+)
 
 func Encrypt(dst io.Writer, src io.Reader, passphrase string) error {
 	if err := validatePassphrase(passphrase); err != nil {
@@ -19,6 +22,7 @@ func Encrypt(dst io.Writer, src io.Reader, passphrase string) error {
 	if err != nil {
 		return err
 	}
+	recipient.SetWorkFactor(maxAgeScryptWorkFactor)
 	writer, err := age.Encrypt(dst, recipient)
 	if err != nil {
 		return err
@@ -38,6 +42,7 @@ func Decrypt(src io.Reader, passphrase string) (io.Reader, error) {
 	if err != nil {
 		return nil, err
 	}
+	identity.SetMaxWorkFactor(maxAgeScryptWorkFactor)
 	return age.Decrypt(src, identity)
 }
 

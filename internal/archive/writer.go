@@ -10,9 +10,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
+
+	"github.com/burggraf/sparc-cli/internal/platform"
 )
 
 const manifestName = "manifest.age"
+
+var ErrWrite = errors.New("archive write failed")
 
 type Input struct {
 	Key    string
@@ -22,21 +27,18 @@ type Input struct {
 }
 
 func Write(dir string, inputs []Input, passphrase string) (Manifest, error) {
-	if err := validatePassphrase(passphrase); err != nil {
-		return Manifest{}, err
+	if err := validatePassphrase(passphrase); err != nil || platform.CheckPrivateDir(dir) != nil || validateInputs(inputs) != nil {
+		return Manifest{}, ErrWrite
 	}
 	if _, err := os.Lstat(filepath.Join(dir, manifestName)); err == nil || !os.IsNotExist(err) {
-		return Manifest{}, errors.New("archive manifest already exists")
+		return Manifest{}, ErrWrite
 	}
 	manifest := Manifest{Format: Format, Version: Version, Components: make([]Component, 0, len(inputs))}
 	for i, input := range inputs {
-		if input.Source == nil || input.Key == "" || input.Scope == "" {
-			return Manifest{}, errors.New("invalid archive input")
-		}
 		id := fmt.Sprintf("%08x", i)
 		length, digest, err := writePayload(filepath.Join(dir, id+".age"), input.Source, passphrase)
 		if err != nil {
-			return Manifest{}, err
+			return Manifest{}, ErrWrite
 		}
 		status := input.Status
 		if status == "" {
@@ -45,20 +47,47 @@ func Write(dir string, inputs []Input, passphrase string) (Manifest, error) {
 		manifest.Components = append(manifest.Components, Component{ID: id, Key: input.Key, Scope: input.Scope, Status: status, Length: length, SHA256: digest})
 	}
 	if err := manifest.Validate(); err != nil {
-		return Manifest{}, err
+		return Manifest{}, ErrWrite
+	}
+	for _, component := range manifest.Components {
+		if err := verifyPayload(filepath.Join(dir, component.ID+".age"), component, passphrase); err != nil {
+			return Manifest{}, ErrWrite
+		}
 	}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
-		return Manifest{}, err
+		return Manifest{}, ErrWrite
 	}
 	if _, _, err := writePayload(filepath.Join(dir, manifestName), bytesReader(encoded), passphrase); err != nil {
-		return Manifest{}, err
+		return Manifest{}, ErrWrite
 	}
 	return manifest, nil
 }
 
+func validateInputs(inputs []Input) error {
+	if len(inputs) == 0 || len(inputs) > maxComponents {
+		return errors.New("invalid archive inputs")
+	}
+	keys := make(map[string]struct{}, len(inputs))
+	for _, input := range inputs {
+		status := input.Status
+		if status == "" {
+			status = "complete"
+		}
+		if input.Source == nil || !validKey(input.Key) || input.Scope == "" || len(input.Scope) > maxScopeBytes || !utf8.ValidString(input.Scope) || hasControl(input.Scope) || (status != "complete" && status != "incomplete") {
+			return errors.New("invalid archive input")
+		}
+		key := portableFold(input.Key)
+		if _, exists := keys[key]; exists {
+			return errors.New("duplicate archive logical key")
+		}
+		keys[key] = struct{}{}
+	}
+	return nil
+}
+
 func writePayload(path string, source io.Reader, passphrase string) (int64, string, error) {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := platform.CreatePrivateFile(path)
 	if err != nil {
 		return 0, "", err
 	}

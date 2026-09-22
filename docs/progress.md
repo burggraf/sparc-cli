@@ -924,9 +924,58 @@ Final guarded validation exited 0 under `GOTOOLCHAIN=local`, `GOPROXY=off`,
 and compile-only archive test binaries for Windows AMD64 and Darwin AMD64/arm64.
 Those cross-compiled test binaries were removed without execution.
 
-No local destination privacy/no-clobber implementation, reader/offline verifier,
-source-mutation detection, resume journal, remote destination, real payload,
-PostgreSQL connection, network service, hosted project, or Supabase operation
-was added. Owner authorization remains required before real payload work,
-release/signing costs, PostgreSQL installation, native-machine provisioning, or
-hosted testing.
+No Task 06 real payload, PostgreSQL connection, network service, hosted
+project, or Supabase operation was added. Owner authorization remains required
+before real payload work, release/signing costs, PostgreSQL installation,
+native-machine provisioning, or hosted testing.
+
+## Task 07, private local publication and offline archive verification
+
+Implemented `internal/destination`, `internal/archive/reader.go`, and
+`internal/verify`. Following the owner's choice, destination publication
+requires an already-existing private parent directory on a supported local
+volume; ordinary shared folders and network paths are refused. `Create` writes
+into a random private sibling staging folder, checks every encrypted payload
+by reopening/decrypting through authenticated EOF and comparing plaintext size
+and SHA-256 **before** writing the encrypted final manifest, then atomically
+publishes the finished directory with native no-replace semantics. Existing
+final paths remain unchanged. Normal error cleanup removes only owned files in
+the staging directory, best-effort; a crash may leave an unpublished private
+staging folder. This is not a multi-file transaction or a durability guarantee.
+
+`archive.Verify` validates the private directory, authenticated encrypted
+manifest, strict bounded manifest schema and portable logical keys, exact
+payload inventory, each age-authenticated EOF, length, and digest. Unknown or
+extra files, missing payloads, symlinks, corruption, truncation, wrong
+passphrases, and digest mismatches fail with fixed errors. Passphrase KDF work
+is capped at age scrypt work factor 18. No archived content is executed.
+`verify.Offline` requires only archive path and passphrase, does not read source
+configuration or use networking, and reports byte integrity separately from
+the manifest-declared complete/incomplete capture status. Passing integrity is
+not proof of full Supabase recovery coverage. Source-folder deletion before
+offline verification is covered by a test.
+
+Focused tests passed: `go test -mod=readonly ./internal/destination
+./internal/archive ./internal/verify -count=1 -v -timeout=240s`; source-redaction,
+no-clobber, partial-write cleanup, non-private-parent refusal,
+exact inventory, malformed UTF-8/surrogates, path/case collisions, and size/depth
+limits are included.
+
+Final guarded checks exited 0 with `GOTOOLCHAIN=local`, `GOPROXY=off`,
+`GOSUMDB=off`, `GOWORK=off`, `GOENV=off`, `GOFLAGS=`, and `GOTELEMETRY=off`:
+`go mod verify`; targeted Task 07 package tests; targeted package race tests;
+`go test -mod=readonly ./... -count=1 -timeout=240s`; `go vet -mod=readonly
+./...`; `go build -mod=readonly ./cmd/sparc`; `gofmt`; and `git diff --check`.
+Compile-only archive/destination/verify test binaries succeeded for Windows AMD64
+and Darwin AMD64/arm64; they were removed without execution. The generated-stream
+8 MiB encryption benchmark ran once on Apple M1/Darwin arm64 in 502,363,792 ns
+with 268,710,440 bytes and 122 allocations, mostly age scrypt setup; this is not
+a scale/support claim.
+
+Native Windows runtime and effective macOS extended/inherited ACL qualification
+remain open. Unicode logical keys are preserved without normalization; later
+extraction must detect platform normalization collisions. Source-mutation
+detection, resume, remote destinations, public backup/verify/restore commands,
+real payload provenance, PostgreSQL/Supabase behavior, and production inventory
+remain unimplemented. No network, hosted service, real payload, local PostgreSQL
+installation, or cost was involved in Task 07.
