@@ -117,6 +117,29 @@ Public failures are only `credential input unavailable` or
 errors. Callers receive secret bytes only on success and must never log or
 serialize them. There is no secure-memory/erasure guarantee.
 
+## Scoped PostgreSQL passfiles
+
+`credentials.NewPGPassfile` accepts any verified private directory and creates
+one exclusive private `.pgpass-<random>` file there. The runner specifically
+chooses its private operation directory. Its exact contents are one
+`host:port:database:user:password` line plus LF; `:` and `\\` are escaped, and
+spaces are preserved. Host, database, and user are bounded non-control UTF-8
+text; the standalone selector `*` is rejected. Passwords are separately bounded
+non-control UTF-8 bytes and may contain ordinary literal punctuation. The
+operation boundary rejects database conninfo (`=`) and `postgres://` /
+`postgresql://` forms instead of allowing an ambient connection selector.
+
+The file is closed before launch and exposed only through a scoped
+`PGPASSFILE`. `PGPassfile.Close` makes one owned deletion attempt and returns the
+fixed `credential passfile unavailable` error if it fails. After all runner
+resources and the output sink close, the runner makes that deletion attempt and
+one operation-directory removal attempt; either failure returns fixed `tool run
+failed`. Abnormal termination can leave a private plaintext file. There is no
+`PGPASSWORD`, argv secret, plaintext persistence fallback, or secure-erasure
+claim. Native Windows runtime and macOS ACL qualification limits still apply. See
+[trusted tools](tools.md) for runner argument, environment, and process-lifecycle
+boundaries.
+
 ## Strict v1 profiles
 
 `config.Load` reads only a private file, bounded to 64 KiB including whitespace.

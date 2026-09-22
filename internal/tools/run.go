@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/burggraf/sparc-cli/internal/credentials"
 	"github.com/burggraf/sparc-cli/internal/platform"
 )
 
@@ -32,11 +34,20 @@ type OutputSink interface {
 	CloseContext(context.Context) error
 }
 
-// RunRequest permits only a typed tool's version invocation. Structured
-// connected invocations are added with the scoped passfile boundary in Task 6.
+// PGConnection is the only accepted connection input for a PostgreSQL client.
+type PGConnection struct {
+	Host, User, Database string
+	Port                 uint16
+	Password             []byte
+}
+
+// RunRequest permits a typed version invocation or a typed PostgreSQL
+// connection. It accepts no free-form client arguments, SQL, stdin, cwd, or
+// environment.
 type RunRequest struct {
 	Tool                     Tool
 	Version                  bool
+	Connection               *PGConnection
 	Timeout, CleanupTimeout  time.Duration
 	StdoutLimit, StderrLimit uint64
 	Stdout                   OutputSink
@@ -56,6 +67,11 @@ type ownedProcess interface {
 	CloseContext(context.Context) error
 }
 
+type passfileLifecycle interface {
+	Path() string
+	Close() error
+}
+
 type runOps struct {
 	createDir       func(string) error
 	removeAll       func(string) error
@@ -64,6 +80,7 @@ type runOps struct {
 	pipe            func() (*os.File, *os.File, error)
 	closeFile       func(*os.File) error
 	start           func(platform.ProcessSpec) (ownedProcess, error)
+	newPassfile     func(string, credentials.PGPassEntry) (passfileLifecycle, error)
 	validate        func(context.Context, Tool, packageManifest, string, string) (string, error) // test-only validation seam
 	prepare         func(string) error                                                           // test-only per-call operation setup
 	afterWaitResult func()                                                                       // test-only post-send gate
@@ -79,6 +96,9 @@ func defaultRunOps() runOps {
 		closeFile: (*os.File).Close,
 		start: func(spec platform.ProcessSpec) (ownedProcess, error) {
 			return platform.StartProcess(spec)
+		},
+		newPassfile: func(directory string, entry credentials.PGPassEntry) (passfileLifecycle, error) {
+			return credentials.NewPGPassfile(directory, entry)
 		},
 	}
 }
@@ -127,12 +147,16 @@ func withRunSink(request RunRequest, run func(*runSink) (RunResult, error)) (res
 				resultErr = ErrOutput
 			}
 		}
+		if sink.postClose != nil && sink.postClose() != nil {
+			result = RunResult{}
+			resultErr = ErrRun
+		}
 	}()
 	return run(sink)
 }
 
 func runWithSink(ctx context.Context, request RunRequest, sink *runSink, manifest packageManifest, packagePath, cacheRoot string, ops runOps) (result RunResult, resultErr error) {
-	if ops.createDir == nil || ops.removeAll == nil || ops.random == nil || ops.openNull == nil || ops.pipe == nil || ops.closeFile == nil || ops.start == nil {
+	if ops.createDir == nil || ops.removeAll == nil || ops.random == nil || ops.openNull == nil || ops.pipe == nil || ops.closeFile == nil || ops.start == nil || ops.newPassfile == nil {
 		return RunResult{}, ErrRun
 	}
 	runCtx, cancel := context.WithTimeout(ctx, request.Timeout)
@@ -149,16 +173,27 @@ func runWithSink(ctx context.Context, request RunRequest, sink *runSink, manifes
 	if err != nil {
 		return RunResult{}, ErrRun
 	}
-	defer func() {
+	var passfile passfileLifecycle
+	sink.postClose = func() error {
+		failed := passfile != nil && passfile.Close() != nil
 		if ops.removeAll(operation) != nil {
-			result = RunResult{}
-			resultErr = ErrRun
+			failed = true
 		}
-	}()
+		if failed {
+			return ErrRun
+		}
+		return nil
+	}
 	if ops.prepare != nil && ops.prepare(operation) != nil || runCtx.Err() != nil {
 		return RunResult{}, ErrRun
 	}
-	return executeRun(runCtx, cancel, request, sink, path, operation, ops)
+	if request.Connection != nil {
+		passfile, err = ops.newPassfile(operation, credentials.PGPassEntry{Host: request.Connection.Host, Port: request.Connection.Port, Database: request.Connection.Database, User: request.Connection.User, Password: request.Connection.Password})
+		if err != nil {
+			return RunResult{}, ErrRun
+		}
+	}
+	return executeRun(runCtx, cancel, request, sink, path, operation, passfilePath(passfile), ops)
 }
 
 func validateRunInputs(ctx context.Context, tool Tool, manifest packageManifest, packagePath, cacheRoot string) (string, error) {
@@ -177,7 +212,13 @@ func validateRunInputs(ctx context.Context, tool Tool, manifest packageManifest,
 }
 
 func validRunRequest(request RunRequest) bool {
-	return validTool(request.Tool) && request.Version && request.Timeout > 0 && request.CleanupTimeout > 0 && request.CleanupTimeout <= maxCleanupTimeout && request.StdoutLimit > 0 && request.StderrLimit > 0 && request.Stdout != nil
+	if !validTool(request.Tool) || request.Timeout <= 0 || request.CleanupTimeout <= 0 || request.CleanupTimeout > maxCleanupTimeout || request.StdoutLimit == 0 || request.StderrLimit == 0 || request.Stdout == nil || request.Version == (request.Connection != nil) {
+		return false
+	}
+	if request.Connection == nil {
+		return true
+	}
+	return credentials.ValidatePGPassEntry(credentials.PGPassEntry{Host: request.Connection.Host, Port: request.Connection.Port, Database: request.Connection.Database, User: request.Connection.User, Password: request.Connection.Password}) == nil
 }
 
 func manifestFile(manifest packageManifest, path string) payloadFile {
@@ -239,7 +280,7 @@ type runExecution struct {
 	workers      sync.WaitGroup
 }
 
-func executeRun(ctx context.Context, cancel context.CancelFunc, request RunRequest, sink *runSink, executable, operation string, ops runOps) (result RunResult, resultErr error) {
+func executeRun(ctx context.Context, cancel context.CancelFunc, request RunRequest, sink *runSink, executable, operation, passfile string, ops runOps) (result RunResult, resultErr error) {
 	run := &runExecution{ctx: ctx, cancel: cancel, request: request, ops: ops, sink: sink, waited: processResult{code: -1}}
 	defer func() { result, resultErr = run.finalize(resultErr) }()
 
@@ -283,8 +324,12 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 		return RunResult{}, ErrRun
 	}
 
+	arguments, err := runArguments(request)
+	if err != nil {
+		return RunResult{}, ErrRun
+	}
 	process, err := ops.start(platform.ProcessSpec{
-		Path: executable, Args: []string{"--version"}, Env: runEnvironment(home, temp, config), Dir: operation,
+		Path: executable, Args: arguments, Env: runEnvironment(home, temp, config, passfile), Dir: operation,
 		Stdin: stdin.file, Stdout: stdoutWrite.file, Stderr: stderrWrite.file,
 	})
 	if process != nil {
@@ -444,9 +489,10 @@ func (f *runFile) close() error {
 }
 
 type runSink struct {
-	sink OutputSink
-	once sync.Once
-	err  error
+	sink      OutputSink
+	postClose func() error
+	once      sync.Once
+	err       error
 }
 
 func newRunSink(sink OutputSink) *runSink { return &runSink{sink: sink} }
@@ -514,6 +560,32 @@ func pump(ctx context.Context, file *os.File, limit uint64, consume func([]byte)
 	}
 }
 
-func runEnvironment(home, temp, config string) []string {
-	return []string{"HOME=" + home, "TMPDIR=" + temp, "TMP=" + temp, "TEMP=" + temp, "XDG_CONFIG_HOME=" + config, "LANG=C", "LC_ALL=C"}
+func passfilePath(passfile passfileLifecycle) string {
+	if passfile == nil {
+		return ""
+	}
+	return passfile.Path()
+}
+
+func runArguments(request RunRequest) ([]string, error) {
+	if request.Version {
+		return []string{"--version"}, nil
+	}
+	if request.Connection == nil {
+		return nil, ErrRun
+	}
+	connection := request.Connection
+	common := []string{"--no-password", "--host=" + connection.Host, "--port=" + strconv.FormatUint(uint64(connection.Port), 10), "--username=" + connection.User, "--dbname=" + connection.Database}
+	if request.Tool == PSQL {
+		return append([]string{"-X", "--set=ON_ERROR_STOP=1"}, common...), nil
+	}
+	return common, nil
+}
+
+func runEnvironment(home, temp, config, passfile string) []string {
+	environment := []string{"HOME=" + home, "TMPDIR=" + temp, "TMP=" + temp, "TEMP=" + temp, "XDG_CONFIG_HOME=" + config, "LANG=C", "LC_ALL=C"}
+	if passfile != "" {
+		environment = append(environment, "PGPASSFILE="+passfile)
+	}
+	return environment
 }

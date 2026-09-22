@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/burggraf/sparc-cli/internal/credentials"
 	"github.com/burggraf/sparc-cli/internal/platform"
 )
 
@@ -71,6 +72,211 @@ func TestRunUsesOnlyTypedVersionAndIsolatedProcessSpec(t *testing.T) {
 	}
 }
 
+func TestRunConnectedInvocationUsesOnlyScopedPassfile(t *testing.T) {
+	for _, test := range []struct {
+		tool Tool
+		args []string
+	}{
+		{PGDump, []string{"--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}},
+		{PGRestore, []string{"--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}},
+		{PSQL, []string{"-X", "--set=ON_ERROR_STOP=1", "--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}},
+	} {
+		t.Run(string(test.tool), func(t *testing.T) {
+			manifest, packagePath, cacheRoot := preparedRunPayload(t)
+			t.Setenv("PGPASSWORD", "ambient-secret")
+			t.Setenv("PGPASSFILE", "ambient-passfile")
+			t.Setenv("PGSERVICE", "ambient-service")
+			t.Setenv("PSQLRC", "ambient-psqlrc")
+			var got platform.ProcessSpec
+			var passfile string
+			sink := &passfileSink{path: &passfile}
+			ops := runTestOps(func(spec platform.ProcessSpec) (ownedProcess, error) {
+				got = spec
+				passfile = environmentValue(spec.Env, "PGPASSFILE")
+				if passfile == "" {
+					t.Fatal("missing scoped passfile")
+				}
+				line, err := platform.ReadPrivateFile(passfile, 1024)
+				if err != nil || string(line) != "db.example:5432:project db:backup user:secret-canary\n" {
+					t.Fatalf("passfile = %q, %v", line, err)
+				}
+				_, _ = spec.Stdout.Write([]byte("ok"))
+				return completedProcess(0), nil
+			})
+			request := connectedRunRequestForTest(sink)
+			request.Tool = test.tool
+			result, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops)
+			if err != nil || result != (RunResult{ExitCode: 0, StdoutBytes: 2}) {
+				t.Fatalf("run = %#v, %v", result, err)
+			}
+			if strings.Join(got.Args, "\x00") != strings.Join(test.args, "\x00") || strings.Contains(strings.Join(got.Args, "\x00"), "secret-canary") {
+				t.Fatalf("arguments = %#v", got.Args)
+			}
+			for _, forbidden := range []string{"PGPASSWORD=", "PGSERVICE=", "PSQLRC=", "PATH="} {
+				if containsEnvironment(got.Env, forbidden) {
+					t.Fatalf("ambient environment selected: %#v", got.Env)
+				}
+			}
+			if sink.closeCount() != 1 || !sink.passfileExistedAtClose {
+				t.Fatalf("sink close/passfile ordering = %d/%v", sink.closeCount(), sink.passfileExistedAtClose)
+			}
+			if _, err := os.Lstat(passfile); !os.IsNotExist(err) {
+				t.Fatalf("passfile remained: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunConnectedPassfileIsRemovedOnEveryOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		start            func(platform.ProcessSpec) (ownedProcess, error)
+		sink             *memorySink
+		cancelAfterStart bool
+		want             error
+	}{
+		{"start", func(platform.ProcessSpec) (ownedProcess, error) { return nil, errors.New("secret-canary") }, &memorySink{}, false, ErrRun},
+		{"nonzero", func(platform.ProcessSpec) (ownedProcess, error) { return completedProcess(23), nil }, &memorySink{}, false, ErrRun},
+		{"output", func(spec platform.ProcessSpec) (ownedProcess, error) {
+			_, _ = spec.Stdout.Write([]byte("x"))
+			return completedProcess(0), nil
+		}, &memorySink{writeErr: errors.New("secret-canary")}, false, ErrOutput},
+		{"cancel", func(platform.ProcessSpec) (ownedProcess, error) { return waitingProcess(), nil }, &memorySink{}, true, ErrRun},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manifest, packagePath, cacheRoot := preparedRunPayload(t)
+			var passfile string
+			ctx, cancel := context.WithCancel(context.Background())
+			start := func(spec platform.ProcessSpec) (ownedProcess, error) {
+				passfile = environmentValue(spec.Env, "PGPASSFILE")
+				process, err := test.start(spec)
+				if test.cancelAfterStart {
+					cancel()
+				}
+				return process, err
+			}
+			ops := runTestOps(start)
+			result, err := runWith(ctx, connectedRunRequestForTest(test.sink), manifest, packagePath, cacheRoot, ops)
+			cancel()
+			if err != test.want || result != (RunResult{}) || strings.Contains(err.Error(), "secret-canary") {
+				t.Fatalf("run = %#v, %v", result, err)
+			}
+			if passfile == "" || test.sink.closeCount() != 1 {
+				t.Fatalf("passfile/sink = %q/%d", passfile, test.sink.closeCount())
+			}
+			if _, err := os.Lstat(passfile); !os.IsNotExist(err) {
+				t.Fatalf("passfile remained: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunRejectsInvalidConnectionSelectionBeforeInventoryLookup(t *testing.T) {
+	for _, database := range []string{"service=ignored", "passfile=ignored", "arbitrary=value", "postgres://host/db", "POSTGRESQL://host/db"} {
+		t.Run(database, func(t *testing.T) {
+			t.Setenv("HOME", "hostile-relative-home")
+			request := connectedRunRequestForTest(&memorySink{})
+			request.Connection.Database = database
+			if result, err := Run(context.Background(), request); result != (RunResult{}) || err != ErrRun || strings.Contains(err.Error(), "secret-canary") {
+				t.Fatalf("Run = %#v, %v", result, err)
+			}
+		})
+	}
+}
+
+func TestRunConnectedPostPassfileFailuresRemoveAndRedact(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		edit func(*runOps, *RunRequest)
+		want error
+	}{
+		{"post-passfile prelaunch", func(ops *runOps, _ *RunRequest) {
+			ops.openNull = func() (*os.File, error) { return nil, errors.New("secret-canary") }
+		}, ErrRun},
+		{"timeout", func(ops *runOps, request *RunRequest) {
+			ops.validate = func(_ context.Context, _ Tool, _ packageManifest, path, _ string) (string, error) {
+				return filepath.Join(path, "bin", "psql"), nil
+			}
+			ops.start = func(platform.ProcessSpec) (ownedProcess, error) { return waitingProcess(), nil }
+			request.Timeout = 20 * time.Millisecond
+		}, ErrRun},
+		{"passfile cleanup", func(ops *runOps, _ *RunRequest) {
+			ops.start = func(platform.ProcessSpec) (ownedProcess, error) { return completedProcess(0), nil }
+		}, ErrRun},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manifest, packagePath, cacheRoot := preparedRunPayload(t)
+			var path string
+			ops := runTestOps(func(platform.ProcessSpec) (ownedProcess, error) { return completedProcess(0), nil })
+			request := connectedRunRequestForTest(&memorySink{})
+			test.edit(&ops, &request)
+			ops.newPassfile = func(dir string, entry credentials.PGPassEntry) (passfileLifecycle, error) {
+				passfile, err := credentials.NewPGPassfile(dir, entry)
+				if err != nil {
+					return nil, err
+				}
+				path = passfile.Path()
+				if test.name == "passfile cleanup" {
+					return failingPassfile{PGPassfile: passfile}, nil
+				}
+				return passfile, nil
+			}
+			result, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops)
+			if result != (RunResult{}) || err != test.want || strings.Contains(err.Error(), "secret-canary") {
+				t.Fatalf("run = %#v, %v", result, err)
+			}
+			if path == "" || request.Stdout.(*memorySink).closeCount() != 1 {
+				t.Fatalf("passfile/sink = %q/%d", path, request.Stdout.(*memorySink).closeCount())
+			}
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("surviving passfile: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunAttemptsPassfileAndOperationCleanupOnceOnEveryFailureCombination(t *testing.T) {
+	for _, test := range []struct {
+		name, secret   string
+		passfileFails  bool
+		operationFails bool
+	}{
+		{"passfile", "passfile-secret-canary", true, false},
+		{"operation", "operation-secret-canary", false, true},
+		{"both", "both-secret-canary", true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manifest, packagePath, cacheRoot := preparedRunPayload(t)
+			ops := runTestOps(func(platform.ProcessSpec) (ownedProcess, error) { return completedProcess(0), nil })
+			var passfileAttempts, operationAttempts int
+			var operationPath string
+			ops.newPassfile = func(directory string, _ credentials.PGPassEntry) (passfileLifecycle, error) {
+				operationPath = directory
+				return &countingPassfile{path: filepath.Join(directory, ".pgpass-failure"), attempts: &passfileAttempts, err: cleanupTestError(test.passfileFails, test.secret)}, nil
+			}
+			remove := ops.removeAll
+			ops.removeAll = func(path string) error {
+				operationAttempts++
+				if err := remove(path); err != nil {
+					return err
+				}
+				if test.operationFails {
+					return errors.New(test.secret)
+				}
+				return nil
+			}
+			sink := &memorySink{}
+			result, err := runWith(context.Background(), connectedRunRequestForTest(sink), manifest, packagePath, cacheRoot, ops)
+			if result != (RunResult{}) || err != ErrRun || strings.Contains(err.Error(), test.secret) {
+				t.Fatalf("run = %#v, %v", result, err)
+			}
+			if passfileAttempts != 1 || operationAttempts != 1 || operationPath == "" || sink.closeCount() != 1 {
+				t.Fatalf("cleanup attempts passfile=%d operation=%d path=%q sink=%d", passfileAttempts, operationAttempts, operationPath, sink.closeCount())
+			}
+		})
+	}
+}
+
 func TestRunRejectsInvalidRequestsAndPrestartCancellation(t *testing.T) {
 	manifest, packagePath, cacheRoot := preparedRunPayload(t)
 	for _, request := range []RunRequest{
@@ -78,11 +284,19 @@ func TestRunRejectsInvalidRequestsAndPrestartCancellation(t *testing.T) {
 		{Tool: PSQL, Version: true, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1},
 		{Tool: PSQL, Version: true, Timeout: 0, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
 		{Tool: PSQL, Version: true, Timeout: time.Second, CleanupTimeout: maxCleanupTimeout + time.Nanosecond, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PSQL, Version: true, Connection: &PGConnection{Host: "host", Port: 5432, User: "user", Database: "database", Password: []byte("secret-canary")}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PSQL, Connection: &PGConnection{}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
 	} {
 		if _, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, runTestOps(nil)); err != ErrRun {
 			t.Fatalf("invalid request error = %v", err)
 		}
 	}
+	invalidConnection := connectedRunRequestForTest(&memorySink{})
+	invalidConnection.Connection.Host = "bad\xff"
+	if result, err := runWith(context.Background(), invalidConnection, manifest, packagePath, cacheRoot, runTestOps(nil)); result != (RunResult{}) || err != ErrRun || strings.Contains(err.Error(), "secret-canary") {
+		t.Fatalf("invalid connection = %#v, %v", result, err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	called := false
@@ -809,6 +1023,19 @@ func validRunRequestForTest(sink OutputSink) RunRequest {
 	return RunRequest{Tool: PSQL, Version: true, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
 }
 
+func connectedRunRequestForTest(sink OutputSink) RunRequest {
+	return RunRequest{Tool: PSQL, Connection: &PGConnection{Host: "db.example", Port: 5432, User: "backup user", Database: "project db", Password: []byte("secret-canary")}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
+}
+
+func environmentValue(entries []string, key string) string {
+	for _, entry := range entries {
+		if value, ok := strings.CutPrefix(entry, key+"="); ok {
+			return value
+		}
+	}
+	return ""
+}
+
 func runTestOps(start func(platform.ProcessSpec) (ownedProcess, error)) runOps {
 	ops := defaultRunOps()
 	if start != nil {
@@ -951,6 +1178,51 @@ func (s *signalingSink) WriteContext(ctx context.Context, data []byte) (int, err
 	<-s.release
 	return n, err
 }
+
+type failingPassfile struct{ *credentials.PGPassfile }
+
+func (p failingPassfile) Close() error {
+	_ = p.PGPassfile.Close()
+	return credentials.ErrPassfile
+}
+
+type countingPassfile struct {
+	path     string
+	attempts *int
+	err      error
+}
+
+func (p *countingPassfile) Path() string { return p.path }
+func (p *countingPassfile) Close() error {
+	(*p.attempts)++
+	return p.err
+}
+
+func cleanupTestError(fail bool, secret string) error {
+	if fail {
+		return errors.New(secret)
+	}
+	return nil
+}
+
+type passfileSink struct {
+	path                   *string
+	closes                 int
+	passfileExistedAtClose bool
+}
+
+func (s *passfileSink) WriteContext(_ context.Context, data []byte) (int, error) {
+	return len(data), nil
+}
+func (s *passfileSink) CloseContext(context.Context) error {
+	s.closes++
+	if s.path != nil && *s.path != "" {
+		_, err := os.Lstat(*s.path)
+		s.passfileExistedAtClose = err == nil
+	}
+	return nil
+}
+func (s *passfileSink) closeCount() int { return s.closes }
 
 type deadlineCloseSink struct{ returned atomic.Bool }
 

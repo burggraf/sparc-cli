@@ -824,10 +824,18 @@ The complete Task 05 mechanism boundary, layouts, diagnostics, output/lifecycle
 policy, environment isolation, TOCTOU boundary, and proof limits are now summarized
 in [`docs/tools.md`](tools.md).
 
-Task 6 remains unimplemented: there is no PostgreSQL passfile lifecycle or structured
-connected invocation. Qualification still requires native Windows Job Object,
-handle-inheritance, argv/environment, DACL/reparse, and descendant runtime evidence;
-macOS extended/inherited ACL evidence; detached-Darwin and abnormal-parent-death
-handling decisions/evidence; and real PostgreSQL payload provenance, redistribution,
-signing/notarization, dependency loading, TLS, noninteractive, and Supabase
-compatibility evidence. Current execution proof remains synthetic only.
+Task 6 is implemented as a synthetic mechanism candidate; qualification still requires
+native Windows Job Object, handle-inheritance, argv/environment, DACL/reparse, and
+descendant runtime evidence; macOS extended/inherited ACL evidence; detached-Darwin
+and abnormal-parent-death handling decisions/evidence; and real PostgreSQL payload
+provenance, redistribution, signing/notarization, dependency loading, TLS,
+noninteractive, and Supabase compatibility evidence. Current execution proof remains
+synthetic only.
+
+## Task 05, scoped PostgreSQL passfiles and typed connection slice — implementation candidate (Task 6)
+
+Added synthetic-only `credentials.PGPassfile` and a typed connected runner request. `PGPassfile` accepts any verified private directory; the runner specifically chooses its private operation directory. It emits exactly one escaped PostgreSQL line, is closed before launch, and is supplied only through scoped `PGPASSFILE`. After process-tree, pump, descriptor, and output-sink closure, the runner makes one owned passfile deletion attempt and one operation-directory removal attempt. Either cleanup failure returns fixed `ErrRun`; abnormal termination can leave private plaintext and there is no secure-erasure claim. Inputs are bounded UTF-8 and reject empty fields, zero ports, controls, CR/LF/NUL, oversize values, standalone pgpass selector `*` host/database/user values, and database conninfo/URI selectors. Literal `*`, `?`, `:`, and `\` remain valid password characters; spaces are retained and only `:`/`\` are escaped. Public passfile errors are the fixed non-wrapping `credential passfile unavailable` sentinel; neither paths nor password bytes are returned.
+
+Connected requests choose a typed client and explicit host/port/user/database/password only. They build fixed direct client flags (`--no-password`, host, port, user, database; `psql` also `-X --set=ON_ERROR_STOP=1`) and accept no SQL, scripts, stdin, arbitrary argv, environment, path, cwd, or shell. `PGPASSWORD`, ambient passfiles/services/psqlrc, PATH, loader, proxy, and credential variables are absent. Production payload inventory remains empty, so this does not enable a real client, backup, verify, or restore operation.
+
+Focused tests cover exact escaping, spaces, invalid/oversize credentials, private exclusive creation, concurrent uniqueness, idempotent removal, redacted write/removal failures; typed argv/environment for every tool; no secret in argv/public errors; and passfile retention through sink close plus removal on success, failed start, nonzero exit, output failure, and cancellation. No real PostgreSQL client, payload, connection, download, installation, network, hosted project, CLI command, commit, or push was added. Native Windows passfile/process behavior and existing macOS extended-ACL qualification remain open gates.
