@@ -2,7 +2,7 @@
 
 ## Current scope
 
-SPARC is scaffold-only and is not yet a backup or recovery tool. No security claim about backup, archive, credential, or recovery behavior is made by the current command shell.
+SPARC is not yet a backup or recovery tool. The current command shell has no operational backup, verify, or restore path. Offline synthetic tests cover limited private-storage, trusted-payload, process-lifecycle, runner, and scoped-passfile mechanisms only; they do not qualify real credentials, PostgreSQL client payloads, hosted Supabase behavior, or recovery. See [credential boundaries](docs/credentials.md), [trusted tools](docs/tools.md), and [compatibility gates](docs/compatibility.md) for the current limits.
 
 ## Reporting a vulnerability
 

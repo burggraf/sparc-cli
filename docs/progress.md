@@ -839,3 +839,49 @@ Added synthetic-only `credentials.PGPassfile` and a typed connected runner reque
 Connected requests choose a typed client and explicit host/port/user/database/password only. They build fixed direct client flags (`--no-password`, host, port, user, database; `psql` also `-X --set=ON_ERROR_STOP=1`) and accept no SQL, scripts, stdin, arbitrary argv, environment, path, cwd, or shell. `PGPASSWORD`, ambient passfiles/services/psqlrc, PATH, loader, proxy, and credential variables are absent. Production payload inventory remains empty, so this does not enable a real client, backup, verify, or restore operation.
 
 Focused tests cover exact escaping, spaces, invalid/oversize credentials, private exclusive creation, concurrent uniqueness, idempotent removal, redacted write/removal failures; typed argv/environment for every tool; no secret in argv/public errors; and passfile retention through sink close plus removal on success, failed start, nonzero exit, output failure, and cancellation. No real PostgreSQL client, payload, connection, download, installation, network, hosted project, CLI command, commit, or push was added. Native Windows passfile/process behavior and existing macOS extended-ACL qualification remain open gates.
+
+## Task 05, documentation and integration audit (Task 7)
+
+**Status:** implementation documentation is complete for the synthetic local mechanism
+scope. It is not a PostgreSQL, Supabase, backup, verify, restore, release, or
+real-credential support claim.
+
+The Task 05 slices are integrated on `main` as `b8f0d92` (typed empty payload
+inventory), `23f51b2` (private payload publication), `7594a4f` (bounded
+extraction), `8a39b2d` (owned process execution), `d3405c7` (bounded execution),
+and `e5b6843` (scoped passfiles). [`docs/tools.md`](tools.md) records the cache
+layout and parser bounds; private staging/no-replace publication; full cache and
+pre-launch revalidation; invalid-winner refusal; typed-only requests; fixed
+diagnostics; isolated environment/cwd; bounded streams; zero failed results;
+fail-stop ownership cleanup; and scoped passfile lifecycle. [`docs/credentials.md`](credentials.md)
+owns private-storage and passfile validation, best-effort deletion, and plaintext
+residual limits. [`SECURITY.md`](../SECURITY.md) limits all current evidence to
+local synthetic mechanisms.
+
+Remaining non-waivable qualification gates are effective macOS extended/inherited
+ACL privacy; native Windows DACL/reparse/console, Job Object, handle-inheritance,
+argv/environment, and descendant evidence; Darwin deliberately detached-descendant
+and abnormal-parent-death limits; same-user replacement between final revalidation
+and execution; and real PostgreSQL payload provenance, redistribution, signing or
+notarization, dependency closure, TLS, noninteractive behavior, and Supabase
+compatibility. Production payload inventory remains empty. No backup, verify, or
+restore command has been enabled.
+
+Owner authorization remains required before real payload acquisition or build,
+redistribution/provenance work, signing/notarization costs, release publication,
+local PostgreSQL installation, native-machine provisioning, or hosted Supabase
+testing. No such access, download, installation, or cost was incurred by Task 05.
+
+### Final guarded verification
+
+All commands below exited 0 under `GOTOOLCHAIN=local`, `GOPROXY=off`,
+`GOSUMDB=off`, `GOWORK=off`, `GOENV=off`, `GOFLAGS=`, and `GOTELEMETRY=off`:
+
+- `go mod verify`
+- `go test -mod=readonly ./internal/tools ./internal/platform ./internal/credentials -count=1 -timeout=180s`
+- `go test -mod=readonly ./... -count=1 -timeout=180s`
+- `go test -mod=readonly -race ./internal/tools ./internal/platform ./internal/credentials -count=1 -timeout=180s`
+- `go vet -mod=readonly ./...`, `gofmt` checks, `git diff --check`, and local
+  Markdown-link checks
+- Compile-only credentials/tools/platform test binaries for Windows AMD64 and
+  Darwin AMD64/arm64; those binaries were removed and never executed.

@@ -1,6 +1,6 @@
 # Trusted tools and bounded execution
 
-Task 05 provides synthetic-only payload-cache and process-runner mechanisms. It does not enable a CLI operation or establish PostgreSQL/Supabase client support. The compiled production payload inventory is empty.
+Task 05 provides synthetic-only payload-cache and process-runner mechanisms. It does not enable a CLI operation or establish PostgreSQL/Supabase client support. The compiled production payload inventory is empty. See [credential boundaries](credentials.md) for private-storage and passfile input/cleanup limits.
 
 ## Runner boundary
 
@@ -24,6 +24,6 @@ Stdout and stderr have separate positive byte limits and separate fixed 32 KiB p
 
 The final revalidation-to-execution interval is not confinement against a malicious process running as the same user. The private-storage boundary also does not protect against root/SYSTEM/administrator access. Task 04's macOS extended/inherited ACL qualification remains open, so POSIX modes alone are not a release claim for real credentials.
 
-On Darwin, native tests cover direct launch, process-group termination, direct-child reaping, and same-group descendants retaining pipes. Deliberately detached descendants and abnormal parent death remain outside that mechanism and unqualified. On Windows, Job Object, handle-inheritance, argv/environment, reparse/DACL, and descendant behavior currently have compile/fault-fixture evidence only; native Windows runtime qualification remains required.
+On Darwin, the native mechanism launches a fresh process group and observes direct-child exit with `kqueue` `EVFILT_PROC`/`NOTE_EXIT` (with one nonreaping Sysctl zombie-state fallback for the process-start-to-registration race). It signals the negative owned group while the direct leader is still unreaped, then reaps the leader and closes the notification descriptor. Native tests cover direct launch, this exit/termination ordering, direct-child reaping, and same-group descendants retaining pipes. Deliberately detached descendants and abnormal parent death remain outside that mechanism and unqualified. On Windows, a kill-on-close Job Object owns a suspended process only after assignment and before resume. Job Object, handle-inheritance, argv/environment, reparse/DACL, and descendant behavior currently have compile/fault-fixture evidence only; native Windows runtime qualification remains required.
 
-All payloads executed by these tests are synthetic Go test helpers. This evidence does not qualify a real PostgreSQL payload's provenance, redistribution, signatures/notarization, dependency loading, TLS, noninteractive behavior, or Supabase compatibility. Backup, verification, restore recipes, and all native/real-payload qualification items remain unimplemented.
+All payloads executed by these tests are synthetic Go test helpers. Darwin has the named native process-group/kqueue evidence above, but native Windows runtime behavior, Darwin detached/abnormal-parent behavior, and containment for any approved real helper remain qualification gates. This evidence does not qualify a real PostgreSQL payload's provenance, redistribution, signatures/notarization, dependency loading, TLS, noninteractive behavior, or Supabase compatibility. Backup, verification, and restore recipes remain unimplemented.
