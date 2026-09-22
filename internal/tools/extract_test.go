@@ -27,6 +27,13 @@ type testArchiveEntry struct {
 	data   []byte
 }
 
+var syntheticFixture struct {
+	once     sync.Once
+	manifest packageManifest
+	archive  []byte
+	entries  []testArchiveEntry
+}
+
 func TestExtractSyntheticPayload(t *testing.T) {
 	manifest, archive, _ := syntheticExecutableArchive(t)
 	root := privateCacheRoot(t)
@@ -579,24 +586,27 @@ func privateCacheRoot(t *testing.T) string {
 
 func syntheticExecutableArchive(t *testing.T) (packageManifest, []byte, []testArchiveEntry) {
 	t.Helper()
-	executable, err := os.ReadFile(os.Args[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	target := payloadTarget{OS: runtime.GOOS, Architecture: runtime.GOARCH}
-	files := []payloadFile{
-		{Path: "bin/pg_dump", Purpose: purposeExecutable, Mode: 0o700, Length: uint64(len(executable)), SHA256: sha256.Sum256(executable)},
-		{Path: "bin/pg_restore", Purpose: purposeExecutable, Mode: 0o700, Length: uint64(len(executable)), SHA256: sha256.Sum256(executable)},
-		{Path: "bin/psql", Purpose: purposeExecutable, Mode: 0o700, Length: uint64(len(executable)), SHA256: sha256.Sum256(executable)},
-	}
-	entries := make([]testArchiveEntry, len(files))
-	for i, file := range files {
-		entries[i] = testArchiveEntry{header: regularHeader(file.Path, file.Mode, int64(file.Length)), data: executable}
-	}
-	archive := buildArchive(t, entries, nil)
-	manifest := packageManifest{SchemaVersion: payloadSchemaVersion, PostgreSQLMajor: supportedPostgreSQLMajor, Target: target, Files: files, Executables: map[Tool]string{PGDump: files[0].Path, PGRestore: files[1].Path, PSQL: files[2].Path}}
-	manifest, archive = withArchive(manifest, archive)
-	return manifest, archive, entries
+	syntheticFixture.once.Do(func() {
+		executable, err := os.ReadFile(os.Args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := payloadTarget{OS: runtime.GOOS, Architecture: runtime.GOARCH}
+		files := []payloadFile{
+			{Path: "bin/pg_dump", Purpose: purposeExecutable, Mode: 0o700, Length: uint64(len(executable)), SHA256: sha256.Sum256(executable)},
+			{Path: "bin/pg_restore", Purpose: purposeExecutable, Mode: 0o700, Length: uint64(len(executable)), SHA256: sha256.Sum256(executable)},
+			{Path: "bin/psql", Purpose: purposeExecutable, Mode: 0o700, Length: uint64(len(executable)), SHA256: sha256.Sum256(executable)},
+		}
+		entries := make([]testArchiveEntry, len(files))
+		for i, file := range files {
+			entries[i] = testArchiveEntry{header: regularHeader(file.Path, file.Mode, int64(file.Length)), data: executable}
+		}
+		archive := buildArchive(t, entries, nil)
+		manifest := packageManifest{SchemaVersion: payloadSchemaVersion, PostgreSQLMajor: supportedPostgreSQLMajor, Target: target, Files: files, Executables: map[Tool]string{PGDump: files[0].Path, PGRestore: files[1].Path, PSQL: files[2].Path}}
+		syntheticFixture.manifest, syntheticFixture.archive = withArchive(manifest, archive)
+		syntheticFixture.entries = entries
+	})
+	return cloneManifest(syntheticFixture.manifest), syntheticFixture.archive, cloneEntries(syntheticFixture.entries)
 }
 
 func regularHeader(name string, mode uint32, size int64) tar.Header {
