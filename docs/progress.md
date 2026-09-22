@@ -1038,3 +1038,22 @@ current official documentation under owner authorization before describing this
 client as compatible with Supabase. No password reset, role creation, setting
 change, OAuth, database connection, service credential, or project mutation was
 implemented.
+
+## R03 — PostgreSQL connectivity and TLS
+
+**Status: open; offline qualification specification recorded, not a research
+closure.** `docs/research/R03-connectivity.md` collects the repository's required
+TLS, route, environment, and project-identity safeguards, plus the independent
+pgx/libpq qualification matrix. It records why TLS hostname validation alone,
+server version, database name, or a successful password cannot prove the
+expected Supabase project—especially through a pooler.
+
+No upstream documentation was fetched, no pgx module or native client was
+selected, and no PostgreSQL installation, local TLS fixture, hosted endpoint,
+or credential was used. Current endpoint syntax, trust-store behavior, project
+binding, direct/session routing, IPv4/IPv6 support, and both drivers' TLS
+semantics remain unverified. **Task 09 remains blocked on that evidence**; the
+research record is not permission to connect or install tools. Next gates are
+owner-approved rechecking of the listed official docs and separate approval for
+any PostgreSQL client installation or disposable local fixture. Hosted tests
+remain separately authorized.
