@@ -1089,14 +1089,14 @@ names (63 UTF-8 bytes each), passes them as a `text[]` parameter, and returns
 exact presence results in caller order; it never interpolates names as SQL or
 patterns. It reports installed extension name/version/schema with fixed bounds
 (256 entries, 256 version bytes), plus selected-schema relation facts: name,
-raw `relkind`, persistence, partition status, RLS flags/policy count, and
-total/user-trigger counts (at most 10,000 relations). It reports up to 1,024
-routine identities (8,192 argument bytes each), kind/language, security-definer
-and configuration-presence flags, but never routine bodies. Unknown relation-kind
-codes remain raw observations. Policy expressions/roles and trigger
+owner role name, raw `relkind`, persistence, partition status, RLS flags/policy
+count, and total/user-trigger counts (at most 10,000 relations). It reports
+up to 1,024 routine identities (8,192 argument bytes each), kind/language,
+security-definer and configuration-presence flags, but never routine bodies.
+Unknown relation-kind codes remain raw observations. Policy expressions/roles and trigger
 behavior/definitions are not collected; these facts are not a security or
-behavior baseline. It does not traverse dependencies or capture owners, ACLs,
-columns, or data. Only PostgreSQL major 17 is accepted;
+behavior baseline. It does not traverse dependencies or capture schema/database
+owners, ACL entries, columns, or data. Only PostgreSQL major 17 is accepted;
 this is not a full inventory, tenant-identity proof, or hosted-support claim.
 
 ### TDD and verification
@@ -1142,6 +1142,13 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
 - **Red:** The initial focused package test failed to compile with undefined
   `ConnectionParams`/`RouteKind` and route constants, as expected before the
   implementation.
+- **Red/green (relation owner):** A local integration test first failed to
+  compile because `RelationObservation.Owner` did not exist. The observation now
+  reports selected relation owner role names (not local OIDs); a synthetic
+  non-login owner is correctly observed on PostgreSQL 17.9. The focused owner,
+  direct-grant, and existing catalog tests passed with
+  `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run 'TestObserveCatalogReportsSelectedRelationOwner|TestObserveCatalogRejectsDirectPublicRelationSelect|TestObserveCatalogOnDisposablePostgres' -count=1 -v`.
+  This is catalog evidence only, not an expected-owner policy or restore gate.
 - **Red/green (CA path controls):** After adding tests for ESC and Unicode
   control characters in CA paths, the focused test failed because `Validate`
   accepted them. Reusing a single strict UTF-8/control-text check fixed the
@@ -1172,6 +1179,10 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
   `go test -mod=readonly -race ./internal/database -count=1 -timeout=120s`,
   `go vet -mod=readonly ./...`, CLI build, Windows AMD64/Darwin arm64 database
   test cross-compiles, `gofmt -d`, and `git diff --check` passed.
+- **2026-09-23 relation-owner update:** default and localdemo-tagged full suites,
+  default/tagged vet, the full PostgreSQL integration suite, integration-tagged
+  vet, Windows AMD64 and Darwin arm64 integration-test cross-compiles, gofmt,
+  and `git diff --check` passed on macOS arm64.
 
 **Still open:** expand catalog/security/dependency observation and selector
 coverage; add native Windows runtime coverage and durable wrong-major refusal;

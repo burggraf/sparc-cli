@@ -51,6 +51,7 @@ type RoutineObservation struct {
 type RelationObservation struct {
 	Schema             string
 	Name               string
+	Owner              string
 	Kind               string
 	Persistence        string
 	IsPartition        bool
@@ -187,6 +188,7 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		relationRows, err := tx.Query(ctx, `
 			SELECT namespace.nspname::text,
 			       relation.relname::text,
+			       pg_catalog.pg_get_userbyid(relation.relowner)::text,
 			       relation.relkind::text,
 			       relation.relpersistence::text,
 			       relation.relispartition,
@@ -216,11 +218,11 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		}
 		for relationRows.Next() {
 			var relation RelationObservation
-			if err := relationRows.Scan(&relation.Schema, &relation.Name, &relation.Kind, &relation.Persistence, &relation.IsPartition, &relation.RowSecurityEnabled, &relation.ForceRowSecurity, &relation.PolicyCount, &relation.TriggerCount, &relation.UserTriggerCount); err != nil {
+			if err := relationRows.Scan(&relation.Schema, &relation.Name, &relation.Owner, &relation.Kind, &relation.Persistence, &relation.IsPartition, &relation.RowSecurityEnabled, &relation.ForceRowSecurity, &relation.PolicyCount, &relation.TriggerCount, &relation.UserTriggerCount); err != nil {
 				relationRows.Close()
 				return observation, contextOr(ctx, ErrCatalogObservation)
 			}
-			if !validIdentifier(relation.Schema) || !validIdentifier(relation.Name) || len(relation.Kind) != 1 || len(relation.Persistence) != 1 {
+			if !validIdentifier(relation.Schema) || !validIdentifier(relation.Name) || !validIdentifier(relation.Owner) || len(relation.Kind) != 1 || len(relation.Persistence) != 1 {
 				relationRows.Close()
 				return observation, ErrCatalogObservation
 			}

@@ -120,6 +120,39 @@ func TestObserveCatalogRejectsDirectPublicRelationSelect(t *testing.T) {
 	}
 }
 
+func TestObserveCatalogReportsSelectedRelationOwner(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal("unable to connect to local fixture as administrator")
+	}
+	defer admin.Close(ctx)
+	for _, statement := range []string{
+		"CREATE ROLE sparc_catalog_owner NOLOGIN",
+		"CREATE TABLE public.sparc_owner_canary (value text NOT NULL)",
+		"ALTER TABLE public.sparc_owner_canary OWNER TO sparc_catalog_owner",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to seed relation-owner fixture")
+		}
+	}
+
+	observation, err := observeCatalog(ctx, fixture.config(t, fixture.caPath), []string{"public"})
+	if err != nil {
+		t.Fatal("unable to observe relation-owner fixture")
+	}
+	for _, relation := range observation.Relations {
+		if relation.Name == "sparc_owner_canary" {
+			if relation.Owner != "sparc_catalog_owner" {
+				t.Fatalf("observed relation owner = %q, want sparc_catalog_owner", relation.Owner)
+			}
+			return
+		}
+	}
+	t.Fatal("owned relation missing from catalog observation")
+}
+
 func TestObserveCatalogRejectsWrongTrust(t *testing.T) {
 	fixture := newPostgresFixture(t)
 	if _, err := observeCatalog(context.Background(), fixture.config(t, fixture.wrongCAPath), nil); err != ErrDatabaseConnect {
@@ -201,15 +234,15 @@ func TestObserveCatalogOnDisposablePostgres(t *testing.T) {
 		t.Fatalf("relation observeCatalog() = %v", err)
 	}
 	wantRelations := []RelationObservation{
-		{Schema: "literal schema", Name: "base table", Kind: "r", Persistence: "p", TriggerCount: 1, UserTriggerCount: 1},
-		{Schema: "literal schema", Name: "base table_pkey", Kind: "i", Persistence: "p"},
-		{Schema: "literal schema", Name: "partitioned child", Kind: "r", Persistence: "p", IsPartition: true},
-		{Schema: "literal schema", Name: "partitioned table", Kind: "p", Persistence: "p"},
-		{Schema: "literal schema", Name: "rls table", Kind: "r", Persistence: "p", RowSecurityEnabled: true, ForceRowSecurity: true, PolicyCount: 1},
-		{Schema: "literal schema", Name: "sample index", Kind: "i", Persistence: "p"},
-		{Schema: "literal schema", Name: "sample matview", Kind: "m", Persistence: "p"},
-		{Schema: "literal schema", Name: "sample sequence", Kind: "S", Persistence: "p"},
-		{Schema: "literal schema", Name: "sample view", Kind: "v", Persistence: "p"},
+		{Schema: "literal schema", Name: "base table", Owner: "postgres", Kind: "r", Persistence: "p", TriggerCount: 1, UserTriggerCount: 1},
+		{Schema: "literal schema", Name: "base table_pkey", Owner: "postgres", Kind: "i", Persistence: "p"},
+		{Schema: "literal schema", Name: "partitioned child", Owner: "postgres", Kind: "r", Persistence: "p", IsPartition: true},
+		{Schema: "literal schema", Name: "partitioned table", Owner: "postgres", Kind: "p", Persistence: "p"},
+		{Schema: "literal schema", Name: "rls table", Owner: "postgres", Kind: "r", Persistence: "p", RowSecurityEnabled: true, ForceRowSecurity: true, PolicyCount: 1},
+		{Schema: "literal schema", Name: "sample index", Owner: "postgres", Kind: "i", Persistence: "p"},
+		{Schema: "literal schema", Name: "sample matview", Owner: "postgres", Kind: "m", Persistence: "p"},
+		{Schema: "literal schema", Name: "sample sequence", Owner: "postgres", Kind: "S", Persistence: "p"},
+		{Schema: "literal schema", Name: "sample view", Owner: "postgres", Kind: "v", Persistence: "p"},
 	}
 	if len(relationObservation.Relations) != len(wantRelations) {
 		t.Fatalf("got %d relations, want %d: %+v", len(relationObservation.Relations), len(wantRelations), relationObservation.Relations)
