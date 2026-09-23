@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,8 @@ func TestLocalFixtureReproducesGlobalDefaultPublicSelect(t *testing.T) {
 	fixture := newPostgresFixture(t)
 	sql := "CREATE ROLE sparc_creator NOLOGIN;\n" +
 		"CREATE ROLE sparc_unapproved LOGIN PASSWORD '" + fixturePassword + "';\n" +
+		"CREATE TABLE public.sparc_column_canary (value text NOT NULL);\n" +
+		"GRANT SELECT (value) ON public.sparc_column_canary TO PUBLIC;\n" +
 		"GRANT CREATE ON SCHEMA public TO sparc_creator;\n" +
 		"GRANT USAGE ON SCHEMA public TO PUBLIC;\n" +
 		"ALTER DEFAULT PRIVILEGES FOR ROLE sparc_creator GRANT SELECT ON TABLES TO PUBLIC;\n" +
@@ -32,6 +35,17 @@ func TestLocalFixtureReproducesGlobalDefaultPublicSelect(t *testing.T) {
 	t.Setenv("USERPROFILE", cleanHome)
 	t.Setenv("APPDATA", cleanHome)
 	runFixtureCommandWithInput(t, []byte(sql), fixture.binDir, "psql", fmt.Sprintf("host=%s hostaddr=127.0.0.1 port=%d user=postgres dbname=postgres sslmode=verify-full sslrootcert='%s'", fixture.params.Host, fixture.port, fixture.caPath), "-v", "ON_ERROR_STOP=1")
+
+	observation, err := observeCatalog(context.Background(), fixture.config(t, fixture.caPath), []string{"public"})
+	if err != nil {
+		t.Fatalf("local preflight observation failed: %v", err)
+	}
+	if !observation.Security.Observed || !observation.Security.PublicSelectDefaults || !observation.Security.PublicSelectObjects || !observation.Security.PublicSelectColumns {
+		t.Fatalf("public default exposure was not fully observed: %+v", observation.Security)
+	}
+	if err := CheckTargetSecurityV1(observation); !errors.Is(err, ErrUnsafeTargetSecurityProfile) {
+		t.Fatalf("preflight error = %v, want unsafe-target refusal", err)
+	}
 
 	conn, err := pgx.ConnectConfig(context.Background(), fixture.configForUser(t, fixture.caPath, "sparc_unapproved"))
 	if err != nil {
@@ -113,6 +127,9 @@ func TestObserveCatalogOnDisposablePostgres(t *testing.T) {
 	}
 	if observation.ServerVersionNum/10000 != supportedPostgresMajor || !observation.TLS || !observation.ReadOnly {
 		t.Fatalf("unexpected server observation: %+v", observation)
+	}
+	if err := CheckTargetSecurityV1(observation); err != nil {
+		t.Fatalf("conservative local profile rejected the clean fixture: %v", err)
 	}
 	if len(observation.Extensions) == 0 {
 		t.Fatal("extension inventory is empty")

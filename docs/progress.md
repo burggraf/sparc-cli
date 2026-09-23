@@ -1181,16 +1181,14 @@ command is enabled.
 
 ## R05 — Destination permissions and ordinary `public` applications
 
-**Status: open; public documentation review and one local counterexample recorded,
-no baseline or preflight is qualified.** `docs/research/R05-permissions.md`
-records PostgreSQL 17 ACL, default-privilege, role-membership, and RLS semantics
-plus current Supabase API, role, and RLS guidance. Supabase documents a change to
-`public`-schema default grants, so a single universal project baseline is not
-inferred. On disposable PostgreSQL 17.9, the TLS loopback fixture created a
-non-RLS table under global default `SELECT TO PUBLIC`; a separate non-superuser
-role read its synthetic canary. The focused test and complete tagged database
-integration suite passed. This reproduces the exposure mechanism, not an SPARC
-restore or preflight. Next: define the independently reviewed target contract
-and test refusal before sentinel mutation. No hosted project or credential was
-used; hosted public/Auth qualification still waits for Task 12 and separate
-exact authorization.
+**Status: partial, open.** `docs/research/R05-permissions.md` records
+PostgreSQL 17 and current Supabase privilege/RLS findings. Supabase documents
+changing `public`-schema defaults, so no universal hosted baseline is inferred.
+The new local `CheckTargetSecurityV1` refuses `PUBLIC SELECT` in selected
+relation/column ACLs and relevant future table defaults; the TLS loopback test
+reproduces the exposure and confirms refusal, while the clean fixture passes.
+This is one narrow guard—not a full security baseline, not wired to restore, and
+not hosted qualification. It does not assess named Supabase roles, ownership,
+memberships, RLS behavior, or drift. Full Tasks 10–11 remain open. No hosted
+project or credential was used; hosted public/Auth qualification waits for Task
+12 and separate exact authorization.

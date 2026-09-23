@@ -1,6 +1,6 @@
 # R05 — Destination permissions and ordinary `public` applications
 
-**Status: open; public documentation reviewed and one local exposure counterexample reproduced. No hosted baseline or permission-preflight behavior is qualified.** This record defines the hazards and local evidence gates for Task 10. It does not choose a universal Supabase ACL profile or claim that a matched catalog snapshot is safe.
+**Status: open; public documentation reviewed and a local version-1 `PUBLIC SELECT` guard is implemented. The full permission baseline and hosted preflight remain unqualified.** This record defines the hazards and local evidence gates for Task 10. It does not choose a universal Supabase ACL profile or claim that a matched catalog snapshot is safe.
 
 **Reviewed:** 2026-09-23. PostgreSQL 17 privilege, GRANT, default-privilege, role, membership, RLS, and catalog documentation; current public Supabase API-security, RLS, and role guidance. No project, database endpoint, credential, or hosted resource was used.
 
@@ -20,6 +20,12 @@
 - Current API-security guidance says existing projects may have default grants on new `public` tables/functions and also describes a platform-default change intended to revoke those automatic grants. This is explicit evidence against copying a single public-schema baseline across all projects. Project age, managed roles, migrations, custom defaults, and current platform behavior require qualification.
 - Supabase documentation is mutable and describes general behavior, not the observed owner/default/ACL state of a particular source or destination. Hosted ordinary-`public` support remains blocked until exact disposable-project authorization and targeted qualification.
 
+## Current local guard (partial; not a complete baseline)
+
+`CheckTargetSecurityV1` uses catalog facts gathered by `ObserveCatalog` inside its existing read-only, TLS-verified PostgreSQL 17 transaction. It refuses when a global or selected-schema table default, selected row-bearing object's ACL, or selected column ACL grants `SELECT` to `PUBLIC`; it also refuses if the required observation is missing or unqualified. It is deliberately conservative and may reject a grant that RLS would otherwise contain. A clean local PostgreSQL fixture passes, and the global-default exposure fixture is rejected.
+
+This first guard does **not** evaluate named roles such as Supabase `anon`, `authenticated`, or `service_role`; owners, membership, grantors/options, policy behavior, security-definer bodies, application collisions, target identity, or changes after observation. A pass means only “no observed `PUBLIC SELECT` in this narrow scope,” not “safe target,” “permission-equivalent,” or restore-ready. No restore command calls this guard.
+
 ## Task 10 implementation constraints
 
 1. Define an independently reviewed expected destination profile. Never copy observed source permissions and call them safe; source state may already expose data.
@@ -30,9 +36,11 @@
 
 ## Local evidence and remaining plan
 
-**Executed 2026-09-23:** `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run '^TestLocalFixtureReproducesGlobalDefaultPublicSelect$' -count=1 -v` passed with PostgreSQL 17.9. The disposable TLS loopback fixture created a `NOLOGIN` owner with global default `SELECT TO PUBLIC`, then a non-RLS table and synthetic row. A separate ordinary login role, not a member of the owner role, read the canary. This proves the default-grant exposure mechanism only; no actual SPARC restore or preflight ran.
+**Executed 2026-09-23:** `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run 'TestLocalFixtureReproducesGlobalDefaultPublicSelect|TestObserveCatalogOnDisposablePostgres' -count=1 -v` passed with PostgreSQL 17.9. The disposable TLS loopback fixture created a `NOLOGIN` owner with global default `SELECT TO PUBLIC`, then a non-RLS table and synthetic row. A separate ordinary login role, not a member of the owner role, read the canary. A second table has a column-only `PUBLIC SELECT` grant. The catalog check detected the default, resulting relation, and column grants; `CheckTargetSecurityV1` refused them. The clean fixture passed the narrow guard. This is local database evidence only; no actual SPARC restore or hosted project was used.
 
-- Run the approved disposable PostgreSQL 17 fixture with synthetic roles/data. Next, test that a future preflight rejects this exposure before any target sentinel changes.
+**Verification 2026-09-23:** `go test -mod=readonly ./... -count=1 -timeout=240s`, tagged PostgreSQL integration tests, serial database race tests, `go vet`, CLI build, Windows AMD64 and Darwin arm64 integration-test cross-compiles, formatting, and `git diff --check` passed.
+
+- Add an isolated direct relation-grant case and confirm refusal happens before any future restore mutation. Then address named roles, ACL distinctions, membership, ownership, RLS and application collisions as separate reviewed facts. Do not treat the current guard as a complete profile.
 - Add focused local cases for NULL versus empty/current ACLs, column-only grants, `PUBLIC`, grant options/grantors, global versus per-schema defaults, PG17 membership flags, RLS enabled/forced and missing-policy behavior, owners/BYPASSRLS, and security-definer/view behavior. Do not treat this matrix as hosted Supabase qualification.
 - No native client payload, hosted connection, or restore command is authorized by this record.
 

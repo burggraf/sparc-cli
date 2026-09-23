@@ -70,6 +70,7 @@ type CatalogObservation struct {
 	Extensions       []ExtensionObservation
 	Relations        []RelationObservation
 	Routines         []RoutineObservation
+	Security         SecurityObservation
 }
 
 // ObserveCatalog performs bounded, read-only observation over the validated
@@ -278,6 +279,12 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 			return observation, contextOr(ctx, ErrCatalogObservation)
 		}
 	}
+
+	security, err := observeSecurity(ctx, tx, schemaNames)
+	if err != nil {
+		return observation, contextOr(ctx, ErrCatalogObservation)
+	}
+	observation.Security = security
 
 	extensionRows, err := tx.Query(ctx, `
 		SELECT extension.extname::text,
