@@ -8,11 +8,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ponytail: cap extension output at 256 entries and 256 version bytes; raise only with a reviewed report-bound change.
+// ponytail: bound catalog output at 256 extensions, 256 version bytes and 10,000 relations; raise only with reviewed report limits.
 const (
 	supportedPostgresMajor = 17
 	maxObservedExtensions  = 256
 	maxExtensionVersion    = 256
+	maxObservedRelations   = 10000
 	inspectionTimeout      = 15 * time.Second
 )
 
@@ -35,6 +36,14 @@ type ExtensionObservation struct {
 	Schema  string
 }
 
+type RelationObservation struct {
+	Schema      string
+	Name        string
+	Kind        string
+	Persistence string
+	IsPartition bool
+}
+
 type CatalogObservation struct {
 	ServerVersionNum int
 	ServerMajor      int
@@ -42,6 +51,7 @@ type CatalogObservation struct {
 	ReadOnly         bool
 	Schemas          []SchemaObservation
 	Extensions       []ExtensionObservation
+	Relations        []RelationObservation
 }
 
 // ObserveCatalog performs bounded, read-only observation over the validated
@@ -115,6 +125,7 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		ReadOnly:         readOnly,
 		Schemas:          make([]SchemaObservation, 0, len(schemaNames)),
 		Extensions:       make([]ExtensionObservation, 0),
+		Relations:        make([]RelationObservation, 0),
 	}
 	if !observation.ReadOnly {
 		return observation, ErrReadOnlyTransaction
@@ -148,6 +159,43 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		rowErr := rows.Err()
 		rows.Close()
 		if rowErr != nil || len(observation.Schemas) != len(schemaNames) {
+			return observation, contextOr(ctx, ErrCatalogObservation)
+		}
+	}
+
+	if len(schemaNames) > 0 {
+		relationRows, err := tx.Query(ctx, `
+			SELECT namespace.nspname::text,
+			       relation.relname::text,
+			       relation.relkind::text,
+			       relation.relpersistence::text,
+			       relation.relispartition
+			FROM unnest($1::text[]) WITH ORDINALITY AS requested(name, ordinal)
+			JOIN pg_catalog.pg_namespace AS namespace
+			  ON namespace.nspname::text COLLATE "C" = requested.name COLLATE "C"
+			JOIN pg_catalog.pg_class AS relation
+			  ON relation.relnamespace = namespace.oid
+			ORDER BY requested.ordinal, relation.relname::text COLLATE "C"
+			LIMIT $2
+		`, schemaNames, maxObservedRelations+1)
+		if err != nil {
+			return observation, contextOr(ctx, ErrCatalogObservation)
+		}
+		for relationRows.Next() {
+			var relation RelationObservation
+			if err := relationRows.Scan(&relation.Schema, &relation.Name, &relation.Kind, &relation.Persistence, &relation.IsPartition); err != nil {
+				relationRows.Close()
+				return observation, contextOr(ctx, ErrCatalogObservation)
+			}
+			if !validIdentifier(relation.Schema) || !validIdentifier(relation.Name) || len(relation.Kind) != 1 || len(relation.Persistence) != 1 {
+				relationRows.Close()
+				return observation, ErrCatalogObservation
+			}
+			observation.Relations = append(observation.Relations, relation)
+		}
+		relationErr := relationRows.Err()
+		relationRows.Close()
+		if relationErr != nil || len(observation.Relations) > maxObservedRelations {
 			return observation, contextOr(ctx, ErrCatalogObservation)
 		}
 	}

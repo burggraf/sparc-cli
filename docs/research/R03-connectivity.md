@@ -108,7 +108,11 @@ resolver/dialer. It observes `server_version_num=170009`, TLS active, and
 `transaction_read_only=on`; exact schema presence/missing results cover spaces,
 quotes, backslashes, regex punctuation, Unicode, exact 63-byte ASCII and
 multibyte UTF-8 names, a decoy, and a missing name. The bounded extension
-inventory reports the default `plpgsql` name, version, and schema.
+inventory reports the default `plpgsql` name, version, and schema. Selected
+schema relation facts cover tables, indexes, views, materialized views,
+sequences, parent/child partitions, and a same-name relation in an unselected
+decoy schema. This is not dependency closure, column inventory, or security
+baseline evidence.
 The durable opt-in test also rejects a wrong CA, hostname mismatch, and a
 non-TLS connection rejected by the fixture's `pg_hba.conf`. It requires an
 approved local `SPARC_TEST_PG_BIN` directory, creates/removes its own cluster
@@ -231,7 +235,7 @@ project identity. They are not production support claims.
 | Environment | v5.11.0 builder refuses all `PG*`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` variables; parser key allowlist, explicit route/TLS fields, empty passfile/servicefile/client-cert settings, and fixed runtime params are unit-tested. The local fixture also ignored poisoned home passfile/client-cert/root files. | Reproduce as durable opt-in test; qualify native-child environment separately; review process-environment mutation assumptions |
 | Route mapping | Current public docs describe direct and shared-pooler forms | Verify actual project Connect values, credential/user binding, and backend identity under separately authorized hosted test |
 | Pooler | Public docs distinguish direct/session/transaction routes and their constraints | Test qualified session routing; transaction mode remains refused |
-| Catalog/selection | v5.11.0 durable local read-only transaction observes TLS/version, exact literal schema presence/missing names including 63-byte ASCII/UTF-8 identifiers, and bounded installed extension name/version/schema records | Expand only reviewed structural/security/dependency inventory; no general closure claim |
+| Catalog/selection | v5.11.0 durable local read-only transaction observes TLS/version, exact literal schema presence/missing names including 63-byte ASCII/UTF-8 identifiers, bounded extension records, and selected-schema `pg_class` facts including partitions and an unselected same-name decoy | Expand only reviewed structural/security/dependency inventory; no general closure claim |
 | Trust policy | Explicit private CA works with local pgx v5.8.0 and v5.11.0 fixtures; v5.11.0 system-root parsing is unit-tested only; `require`/`verify-ca` are insufficient | Choose and test CA/system trust provisioning, rotation, and failure behavior on all supported platforms |
 | Version | Durable local fixture reports `server_version_num=170009`; unit gate accepts only major 17 | Add durable wrong-major integration refusal and prove gate before capture/restore |
 

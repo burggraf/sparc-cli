@@ -104,7 +104,15 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 		"CREATE SCHEMA \"regex.[x]$\";\n" +
 		"CREATE SCHEMA \"雪schema\";\n" +
 		"CREATE SCHEMA \"" + strings.Repeat("a", maxIdentifier) + "\";\n" +
-		"CREATE SCHEMA \"" + strings.Repeat("雪", maxIdentifier/len("雪")) + "\";\n"
+		"CREATE SCHEMA \"" + strings.Repeat("雪", maxIdentifier/len("雪")) + "\";\n" +
+		"CREATE TABLE \"literal schema\".\"base table\" (id bigint PRIMARY KEY);\n" +
+		"CREATE TABLE \"literalXschema\".\"base table\" (id bigint);\n" +
+		"CREATE INDEX \"sample index\" ON \"literal schema\".\"base table\" (id);\n" +
+		"CREATE VIEW \"literal schema\".\"sample view\" AS SELECT id FROM \"literal schema\".\"base table\";\n" +
+		"CREATE MATERIALIZED VIEW \"literal schema\".\"sample matview\" AS SELECT id FROM \"literal schema\".\"base table\";\n" +
+		"CREATE SEQUENCE \"literal schema\".\"sample sequence\";\n" +
+		"CREATE TABLE \"literal schema\".\"partitioned table\" (id bigint) PARTITION BY RANGE (id);\n" +
+		"CREATE TABLE \"literal schema\".\"partitioned child\" PARTITION OF \"literal schema\".\"partitioned table\" FOR VALUES FROM (0) TO (10);\n"
 	runFixtureCommandWithInput(t, []byte(sql), binDir, "psql", "-h", socketDir, "-p", strconv.Itoa(int(port)), "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1")
 
 	return &postgresFixture{

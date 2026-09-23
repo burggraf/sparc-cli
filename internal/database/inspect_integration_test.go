@@ -73,4 +73,27 @@ func TestObserveCatalogOnDisposablePostgres(t *testing.T) {
 			t.Fatalf("schema observation %d = %+v, want name %q present=%t", i, observation.Schemas[i], names[i], wantPresent)
 		}
 	}
+
+	relationObservation, err := observeCatalog(context.Background(), config, []string{"literal schema"})
+	if err != nil {
+		t.Fatalf("relation observeCatalog() = %v", err)
+	}
+	wantRelations := []RelationObservation{
+		{Schema: "literal schema", Name: "base table", Kind: "r", Persistence: "p"},
+		{Schema: "literal schema", Name: "base table_pkey", Kind: "i", Persistence: "p"},
+		{Schema: "literal schema", Name: "partitioned child", Kind: "r", Persistence: "p", IsPartition: true},
+		{Schema: "literal schema", Name: "partitioned table", Kind: "p", Persistence: "p"},
+		{Schema: "literal schema", Name: "sample index", Kind: "i", Persistence: "p"},
+		{Schema: "literal schema", Name: "sample matview", Kind: "m", Persistence: "p"},
+		{Schema: "literal schema", Name: "sample sequence", Kind: "S", Persistence: "p"},
+		{Schema: "literal schema", Name: "sample view", Kind: "v", Persistence: "p"},
+	}
+	if len(relationObservation.Relations) != len(wantRelations) {
+		t.Fatalf("got %d relations, want %d: %+v", len(relationObservation.Relations), len(wantRelations), relationObservation.Relations)
+	}
+	for i, want := range wantRelations {
+		if got := relationObservation.Relations[i]; got != want {
+			t.Errorf("relation %d = %+v, want %+v", i, got, want)
+		}
+	}
 }
