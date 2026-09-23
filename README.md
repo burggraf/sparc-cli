@@ -14,6 +14,16 @@ sparc backup  # unavailable
 
 `help` and `version` run offline and do not access the network or filesystem.
 
+## Try the local recovery rehearsal
+
+This **developer-only integration test**, not a CLI backup command, creates two disposable databases in a new local PostgreSQL 17 cluster, dumps a synthetic schema, encrypts and verifies an archive, deletes the source database, then restores the rows and sequence into the fresh target. It contacts no hosted project. You need Go and trusted local PostgreSQL 17 binaries (`initdb`, `postgres`, `pg_ctl`, `psql`, `pg_dump`, `pg_restore`). Run as a normal user, not root:
+
+```sh
+SPARC_TEST_PG_BIN=/absolute/path/to/postgresql-17/bin go test -tags=integration ./internal/database -run '^TestLocalRecoveryRehearsal$' -count=1 -v
+```
+
+On macOS with Homebrew PostgreSQL 17, use `/opt/homebrew/opt/postgresql@17/bin` if that path exists. On Windows PowerShell, set `$env:SPARC_TEST_PG_BIN` to your approved PostgreSQL 17 `bin` directory, then run the same `go test` command. **If `SPARC_TEST_PG_BIN` is unset, the test skips; a green skipped test proves nothing.** The test uses temporary local files, synthetic credentials and data; it does not produce a persistent backup. This narrow schema-only proof does not establish Supabase support, production client packaging, safe arbitrary restores, or full-project coverage.
+
 ## Development
 
 This scaffold requires Go 1.25 or later:

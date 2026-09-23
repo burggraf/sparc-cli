@@ -1192,3 +1192,36 @@ not hosted qualification. It does not assess named Supabase roles, ownership,
 memberships, RLS behavior, or drift. Full Tasks 10–11 remain open. No hosted
 project or credential was used; hosted public/Auth qualification waits for Task
 12 and separate exact authorization.
+
+## Task 11 — First runnable local recovery rehearsal
+
+**Status: local developer proof only; no CLI backup or hosted support.**
+`TestLocalRecoveryRehearsal` in `internal/database/recovery_integration_test.go`
+uses trusted locally installed PostgreSQL 17.9 binaries and a fresh disposable
+loopback/TLS cluster. Two new databases are independently initialized. The test
+creates a synthetic schema, runs `pg_dump -Fc`, stages the dump privately,
+creates an age-encrypted archive with the existing destination writer, verifies
+it offline (including wrong-passphrase refusal), removes the plaintext staging
+file, deletes the source database, then `pg_restore --single-transaction
+--exit-on-error` into the fresh target. It checks exact rows and sequence state.
+The archive is explicitly marked **incomplete**: this is one schema, not a
+Supabase project. The test-only native commands are not the production trusted
+client runner or bundled payload. Source and target share an isolated cluster,
+so this does not prove recovery during a cluster outage.
+
+**TDD:** the opt-in test first failed compilation on the missing rehearsal
+helper; it then failed private-file staging on a symlinked temporary path. After
+resolving the staging root and implementing the local sequence, the focused test
+passed. Fresh checks: `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin
+go test -mod=readonly -tags=integration ./internal/database -run
+'^TestLocalRecoveryRehearsal$' -count=1 -v -timeout=120s`; full tagged
+database suite; full `go test -mod=readonly ./... -count=1 -timeout=240s`;
+`go vet`, CLI build, Windows AMD64/Darwin arm64 integration test cross-compiles,
+format and diff checks — passed on macOS. Native Windows execution remains
+unqualified. README contains the reproducible local test command.
+
+**Next tangible milestone:** replace the test-only native subprocess path
+with qualified private client execution, then expose a narrowly scoped local
+CLI workflow backed by these primitives. Keep `backup`/`restore` unavailable
+until their actual safety and project coverage gates are met. Hosted testing
+requires the separately authorized disposable project in Task 12.
