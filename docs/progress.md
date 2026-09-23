@@ -1134,8 +1134,9 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
   rejects a wrong CA, hostname mismatch, and non-TLS connection. A custom
   resolver/dialer force the synthetic direct-route hostname to IPv4 loopback.
   It requires `SPARC_TEST_PG_BIN` naming an approved local PostgreSQL bin
-  directory; it creates/removes its cluster and private certificates. It is
-  currently excluded from Windows runtime because bootstrap uses a Unix socket.
+  directory; it creates/removes its cluster and private certificates. The
+  fixture now bootstraps over TLS on IPv4 loopback (no Unix socket) and Windows
+  integration sources cross-compile, but native Windows runtime is untested.
 - **Red:** The initial focused package test failed to compile with undefined
   `ConnectionParams`/`RouteKind` and route constants, as expected before the
   implementation.

@@ -1,4 +1,4 @@
-//go:build integration && !windows
+//go:build integration
 
 package database
 
@@ -10,11 +10,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -44,7 +46,8 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 		t.Fatal("SPARC_TEST_PG_BIN must be an absolute path")
 	}
 	for _, name := range [...]string{"initdb", "pg_ctl", "postgres", "psql"} {
-		if info, err := os.Stat(filepath.Join(binDir, name)); err != nil || info.IsDir() || info.Mode()&0111 == 0 {
+		info, err := os.Stat(fixtureBinaryPath(binDir, name))
+		if err != nil || info.IsDir() || runtime.GOOS != "windows" && info.Mode()&0111 == 0 {
 			t.Fatal("SPARC_TEST_PG_BIN does not contain the required PostgreSQL tools")
 		}
 	}
@@ -65,36 +68,32 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 	caPath, wrongCAPath, certPath, keyPath := writeFixtureCertificates(t, root, host)
 	port := reserveFixturePort(t)
 	dataDir := filepath.Join(root, "data")
-	// PostgreSQL limits Unix socket paths to 103 bytes; Go's test directory can
-	// exceed that on macOS, so keep only the empty socket directory short-lived.
-	socketDir, err := os.MkdirTemp("/tmp", "sparc-pg-socket-")
-	if err != nil {
-		t.Fatal("unable to create local fixture socket directory")
-	}
-	if err := os.Chmod(socketDir, 0700); err != nil {
-		t.Fatal("unable to protect local fixture socket directory")
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
-
 	runFixtureCommand(t, binDir, "initdb", "-D", dataDir, "-U", "postgres", "--auth-local=trust", "--auth-host=scram-sha-256", "--no-sync")
-	if err := os.WriteFile(filepath.Join(dataDir, "pg_hba.conf"), []byte("local all all trust\nhostnossl all all 127.0.0.1/32 reject\nhostssl all all 127.0.0.1/32 scram-sha-256\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dataDir, "pg_hba.conf"), []byte("local all all trust\nhostnossl all all 127.0.0.1/32 reject\nhostssl all postgres 127.0.0.1/32 trust\nhostssl all all 127.0.0.1/32 scram-sha-256\n"), 0600); err != nil {
 		t.Fatal("unable to configure local fixture authentication")
 	}
+	configPath := filepath.Join(dataDir, "postgresql.conf")
+	postgresConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal("unable to read local fixture configuration")
+	}
+	postgresConfig = append(postgresConfig, []byte(fmt.Sprintf(
+		"\nport = %d\nlisten_addresses = '127.0.0.1'\nssl = on\nssl_cert_file = %s\nssl_key_file = %s\nssl_min_protocol_version = 'TLSv1.2'\n",
+		port, quotePostgresConfig(certPath), quotePostgresConfig(keyPath),
+	))...)
+	if err := os.WriteFile(configPath, postgresConfig, 0600); err != nil {
+		t.Fatal("unable to configure local fixture server")
+	}
 
-	options := strings.Join([]string{
-		"-p", strconv.Itoa(int(port)), "-h", "127.0.0.1", "-k", socketDir,
-		"-c", "ssl=on", "-c", "ssl_cert_file=" + certPath, "-c", "ssl_key_file=" + keyPath,
-		"-c", "ssl_min_protocol_version=TLSv1.2",
-	}, " ")
 	logPath := filepath.Join(root, "postgres.log")
-	startFixturePostgres(t, binDir, dataDir, logPath, options)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, filepath.Join(binDir, "pg_ctl"), "-D", dataDir, "-m", "immediate", "-w", "stop")
+		cmd := exec.CommandContext(ctx, fixtureBinaryPath(binDir, "pg_ctl"), "-D", dataDir, "-m", "immediate", "-w", "stop")
 		cmd.Env = os.Environ()
 		_ = cmd.Run()
 	})
+	startFixturePostgres(t, binDir, dataDir, logPath)
 
 	sql := "CREATE ROLE sparc_probe LOGIN PASSWORD '" + fixturePassword + "';\n" +
 		"CREATE SCHEMA \"literal schema\";\n" +
@@ -120,7 +119,8 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 		"ALTER TABLE \"literal schema\".\"rls table\" ENABLE ROW LEVEL SECURITY;\n" +
 		"ALTER TABLE \"literal schema\".\"rls table\" FORCE ROW LEVEL SECURITY;\n" +
 		"CREATE POLICY \"owner policy\" ON \"literal schema\".\"rls table\" USING (owner_name = current_user) WITH CHECK (owner_name = current_user);\n"
-	runFixtureCommandWithInput(t, []byte(sql), binDir, "psql", "-h", socketDir, "-p", strconv.Itoa(int(port)), "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1")
+	connInfo := fmt.Sprintf("host=127.0.0.1 port=%d user=postgres dbname=postgres sslmode=require", port)
+	runFixtureCommandWithInput(t, []byte(sql), binDir, "psql", connInfo, "-v", "ON_ERROR_STOP=1")
 
 	return &postgresFixture{
 		binDir:      binDir,
@@ -166,16 +166,27 @@ func (f *postgresFixture) config(t *testing.T, caPath string) *pgx.ConnConfig {
 	return config
 }
 
-func startFixturePostgres(t *testing.T, binDir, dataDir, logPath, options string) {
+func startFixturePostgres(t *testing.T, binDir, dataDir, logPath string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(binDir, "pg_ctl"), "-D", dataDir, "-l", logPath, "-o", options, "-w", "start")
+	cmd := exec.CommandContext(ctx, fixtureBinaryPath(binDir, "pg_ctl"), "-D", dataDir, "-l", logPath, "-w", "start")
 	cmd.Env = os.Environ()
 	if err := cmd.Run(); err != nil {
 		log, _ := os.ReadFile(logPath)
 		t.Fatalf("local PostgreSQL fixture command pg_ctl failed: %s", strings.TrimSpace(string(log)))
 	}
+}
+
+func fixtureBinaryPath(binDir, name string) string {
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(binDir, name)
+}
+
+func quotePostgresConfig(value string) string {
+	return "'" + strings.ReplaceAll(filepath.ToSlash(value), "'", "''") + "'"
 }
 
 func reserveFixturePort(t *testing.T) uint16 {
@@ -197,7 +208,7 @@ func runFixtureCommandWithInput(t *testing.T, input []byte, binDir, name string,
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(binDir, name), args...)
+	cmd := exec.CommandContext(ctx, fixtureBinaryPath(binDir, name), args...)
 	cmd.Env = os.Environ()
 	cmd.Stdin = strings.NewReader(string(input))
 	if err := cmd.Run(); err != nil {

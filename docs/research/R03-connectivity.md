@@ -119,9 +119,10 @@ closure, or a column inventory.
 The durable opt-in test also rejects a wrong CA, hostname mismatch, and a
 non-TLS connection rejected by the fixture's `pg_hba.conf`. It requires an
 approved local `SPARC_TEST_PG_BIN` directory, creates/removes its own cluster
-and private certs, and is currently excluded from Windows runtime because it
-uses a Unix-domain socket for bootstrap. This is not a broad schema/dependency
-inventory or production support evidence.
+and private certs, and bootstraps over TLS on IPv4 loopback without a Unix
+socket. The integration sources cross-compile for Windows but have not been
+executed there. This is not a broad schema/dependency inventory or production
+support evidence.
 
 ### Supabase connection and pooler guidance
 
