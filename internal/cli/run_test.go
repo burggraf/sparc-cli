@@ -28,13 +28,13 @@ func TestRunCommandContract(t *testing.T) {
 			name:       "help",
 			args:       []string{"help"},
 			wantCode:   0,
-			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Back up a Supabase project (not yet available)\n  verify   Verify a backup (not yet available)\n  restore  Restore a backup (not yet available)\n\nRun \"sparc <command> --help\" for more information when commands become available.\n",
+			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Back up a Supabase project (not yet available)\n  verify   Verify encrypted archive integrity offline\n  restore  Restore a backup (not yet available)\n\nRun \"sparc verify --help\" for verification options.\n",
 		},
 		{
 			name:       "help flag",
 			args:       []string{"--help"},
 			wantCode:   0,
-			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Back up a Supabase project (not yet available)\n  verify   Verify a backup (not yet available)\n  restore  Restore a backup (not yet available)\n\nRun \"sparc <command> --help\" for more information when commands become available.\n",
+			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Back up a Supabase project (not yet available)\n  verify   Verify encrypted archive integrity offline\n  restore  Restore a backup (not yet available)\n\nRun \"sparc verify --help\" for verification options.\n",
 		},
 		{
 			name:       "version",
@@ -53,12 +53,6 @@ func TestRunCommandContract(t *testing.T) {
 			args:       []string{"backup"},
 			wantCode:   1,
 			wantStderr: "sparc: backup is not available in this scaffold\n",
-		},
-		{
-			name:       "verify unavailable",
-			args:       []string{"verify"},
-			wantCode:   1,
-			wantStderr: "sparc: verify is not available in this scaffold\n",
 		},
 		{
 			name:       "restore unavailable",
@@ -134,7 +128,6 @@ func TestRunRejectsExtraArguments(t *testing.T) {
 		{name: "help", args: []string{"help", "extra"}},
 		{name: "version", args: []string{"version", "extra"}},
 		{name: "backup option", args: []string{"backup", "--to", "/backup"}},
-		{name: "verify argument", args: []string{"verify", "/backup"}},
 		{name: "restore option", args: []string{"restore", "--project", "target"}},
 	}
 
@@ -147,7 +140,10 @@ func TestRunRejectsExtraArguments(t *testing.T) {
 			if got := stdout.String(); got != "" {
 				t.Errorf("Run(%q) stdout = %q, want empty", tt.args, got)
 			}
-			const wantStderr = "sparc: this command takes no arguments in this scaffold\nRun \"sparc help\" for usage.\n"
+			wantStderr := "sparc: this command takes no arguments in this scaffold\nRun \"sparc help\" for usage.\n"
+			if tt.name == "help" || tt.name == "version" {
+				wantStderr = "sparc: this command takes no arguments\nRun \"sparc help\" for usage.\n"
+			}
 			if got := stderr.String(); got != wantStderr {
 				t.Errorf("Run(%q) stderr = %q, want %q", tt.args, got, wantStderr)
 			}

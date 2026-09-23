@@ -86,12 +86,24 @@ func rehearseLocalRecovery(t *testing.T, fixture *postgresFixture) {
 		t.Fatal("local test dump cannot be opened")
 	}
 	archiveDir := filepath.Join(privateDir, "encrypted-backup")
+	if retained := os.Getenv("SPARC_TEST_ARCHIVE_OUT"); retained != "" {
+		if !filepath.IsAbs(retained) || filepath.Clean(retained) != retained {
+			t.Fatal("SPARC_TEST_ARCHIVE_OUT must be an absolute, clean path")
+		}
+		archiveDir = retained
+	}
 	const passphrase = "synthetic-rehearsal-passphrase"
 	manifest, createErr := destination.Create(archiveDir, []archive.Input{{Key: "database/demo.dump", Scope: "local PG17 fixture only", Status: "incomplete", Source: plain}}, passphrase)
 	closeErr := plain.Close()
 	removeErr := os.Remove(dumpPath)
-	if createErr != nil || closeErr != nil || removeErr != nil || len(manifest.Components) != 1 {
+	if createErr != nil {
+		t.Fatal("local encrypted archive unavailable; output parent must be private and destination must not exist")
+	}
+	if closeErr != nil || removeErr != nil {
 		t.Fatal("local encrypted archive creation or plaintext cleanup failed")
+	}
+	if len(manifest.Components) != 1 {
+		t.Fatal("local encrypted archive component count differed from the synthetic fixture")
 	}
 	report, err := verify.Offline(archiveDir, passphrase)
 	if err != nil || !report.IntegrityPassed || report.CaptureStatus != "incomplete" || report.ComponentCount != 1 {
