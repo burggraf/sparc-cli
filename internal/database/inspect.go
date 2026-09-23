@@ -8,8 +8,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// ponytail: cap extension output at 256 entries and 256 version bytes; raise only with a reviewed report-bound change.
 const (
 	supportedPostgresMajor = 17
+	maxObservedExtensions  = 256
+	maxExtensionVersion    = 256
 	inspectionTimeout      = 15 * time.Second
 )
 
@@ -26,12 +29,19 @@ type SchemaObservation struct {
 	Present bool
 }
 
+type ExtensionObservation struct {
+	Name    string
+	Version string
+	Schema  string
+}
+
 type CatalogObservation struct {
 	ServerVersionNum int
 	ServerMajor      int
 	TLS              bool
 	ReadOnly         bool
 	Schemas          []SchemaObservation
+	Extensions       []ExtensionObservation
 }
 
 // ObserveCatalog performs bounded, read-only observation over the validated
@@ -104,6 +114,7 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		TLS:              tlsActive,
 		ReadOnly:         readOnly,
 		Schemas:          make([]SchemaObservation, 0, len(schemaNames)),
+		Extensions:       make([]ExtensionObservation, 0),
 	}
 	if !observation.ReadOnly {
 		return observation, ErrReadOnlyTransaction
@@ -139,6 +150,40 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		if rowErr != nil || len(observation.Schemas) != len(schemaNames) {
 			return observation, contextOr(ctx, ErrCatalogObservation)
 		}
+	}
+
+	extensionRows, err := tx.Query(ctx, `
+		SELECT extension.extname::text,
+		       CASE WHEN pg_catalog.octet_length(extension.extversion) <= $1
+		            THEN extension.extversion ELSE '' END,
+		       namespace.nspname::text,
+		       pg_catalog.octet_length(extension.extversion)
+		FROM pg_catalog.pg_extension AS extension
+		JOIN pg_catalog.pg_namespace AS namespace
+		  ON namespace.oid = extension.extnamespace
+		ORDER BY extension.extname::text COLLATE "C"
+		LIMIT $2
+	`, maxExtensionVersion, maxObservedExtensions+1)
+	if err != nil {
+		return observation, contextOr(ctx, ErrCatalogObservation)
+	}
+	for extensionRows.Next() {
+		var extension ExtensionObservation
+		var versionBytes int
+		if err := extensionRows.Scan(&extension.Name, &extension.Version, &extension.Schema, &versionBytes); err != nil {
+			extensionRows.Close()
+			return observation, contextOr(ctx, ErrCatalogObservation)
+		}
+		if versionBytes > maxExtensionVersion || !validIdentifier(extension.Name) || !validText(extension.Version) || !validIdentifier(extension.Schema) {
+			extensionRows.Close()
+			return observation, ErrCatalogObservation
+		}
+		observation.Extensions = append(observation.Extensions, extension)
+	}
+	extensionErr := extensionRows.Err()
+	extensionRows.Close()
+	if extensionErr != nil || len(observation.Extensions) > maxObservedExtensions {
+		return observation, contextOr(ctx, ErrCatalogObservation)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

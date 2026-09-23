@@ -1087,8 +1087,10 @@ lock, and idle-transaction timeouts, then observes the PostgreSQL version, TLS,
 and read-only transaction status. It accepts at most 256 unique literal schema
 names (63 UTF-8 bytes each), passes them as a `text[]` parameter, and returns
 exact presence results in caller order; it never interpolates names as SQL or
-patterns. Only PostgreSQL major 17 is accepted. This small observation is not a
-schema/dependency inventory, tenant identity proof, or hosted-support claim.
+patterns. It also reports installed extension name/version/schema with fixed
+bounds (256 entries, 256 version bytes). Only PostgreSQL major 17 is accepted.
+This small observation is not a schema/security/dependency inventory, tenant
+identity proof, or hosted-support claim.
 
 ### TDD and verification
 
@@ -1115,7 +1117,9 @@ schema/dependency inventory, tenant identity proof, or hosted-support claim.
 - **Local PostgreSQL:** The opt-in disposable PostgreSQL 17.9 loopback fixture
   exercises `observeCatalog`: TLS and read-only transaction are true, version is
   170009, and exact schema presence/missing results cover spaces, quotes,
-  backslashes, regex punctuation, Unicode, a decoy, and a missing name. It also
+  backslashes, regex punctuation, Unicode, exact 63-byte ASCII/UTF-8 identifier
+  boundaries, a decoy, and a missing name. The bounded extension inventory
+  includes the default `plpgsql` extension. It also
   rejects a wrong CA, hostname mismatch, and non-TLS connection. A custom
   resolver/dialer force the synthetic direct-route hostname to IPv4 loopback.
   It requires `SPARC_TEST_PG_BIN` naming an approved local PostgreSQL bin

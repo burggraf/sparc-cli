@@ -102,7 +102,9 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 		"CREATE SCHEMA \"quote\"\"schema\";\n" +
 		"CREATE SCHEMA \"back\\slash\";\n" +
 		"CREATE SCHEMA \"regex.[x]$\";\n" +
-		"CREATE SCHEMA \"雪schema\";\n"
+		"CREATE SCHEMA \"雪schema\";\n" +
+		"CREATE SCHEMA \"" + strings.Repeat("a", maxIdentifier) + "\";\n" +
+		"CREATE SCHEMA \"" + strings.Repeat("雪", maxIdentifier/len("雪")) + "\";\n"
 	runFixtureCommandWithInput(t, []byte(sql), binDir, "psql", "-h", socketDir, "-p", strconv.Itoa(int(port)), "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1")
 
 	return &postgresFixture{

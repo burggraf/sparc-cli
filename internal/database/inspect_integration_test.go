@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -38,7 +39,9 @@ func TestObserveCatalogOnDisposablePostgres(t *testing.T) {
 
 	names := []string{
 		"public", "literal schema", "literalXschema", `quote"schema`,
-		`back\slash`, "regex.[x]$", "雪schema", "missing schema",
+		`back\slash`, "regex.[x]$", "雪schema",
+		strings.Repeat("a", maxIdentifier), strings.Repeat("雪", maxIdentifier/len("雪")),
+		"missing schema",
 	}
 	observation, err := observeCatalog(context.Background(), config, names)
 	if err != nil {
@@ -47,7 +50,25 @@ func TestObserveCatalogOnDisposablePostgres(t *testing.T) {
 	if observation.ServerVersionNum/10000 != supportedPostgresMajor || !observation.TLS || !observation.ReadOnly {
 		t.Fatalf("unexpected server observation: %+v", observation)
 	}
-	for i, wantPresent := range []bool{true, true, true, true, true, true, true, false} {
+	if len(observation.Extensions) == 0 {
+		t.Fatal("extension inventory is empty")
+	}
+	foundPLpgSQL := false
+	for _, extension := range observation.Extensions {
+		if extension.Name == "plpgsql" {
+			foundPLpgSQL = true
+			if extension.Version == "" || extension.Schema != "pg_catalog" {
+				t.Fatalf("unexpected plpgsql observation: %+v", extension)
+			}
+		}
+	}
+	if !foundPLpgSQL {
+		t.Fatal("default plpgsql extension missing from catalog observation")
+	}
+	if len(observation.Schemas) != len(names) {
+		t.Fatalf("got %d schema observations, want %d", len(observation.Schemas), len(names))
+	}
+	for i, wantPresent := range []bool{true, true, true, true, true, true, true, true, true, false} {
 		if observation.Schemas[i].Name != names[i] || observation.Schemas[i].Present != wantPresent {
 			t.Fatalf("schema observation %d = %+v, want name %q present=%t", i, observation.Schemas[i], names[i], wantPresent)
 		}
