@@ -1090,10 +1090,11 @@ exact presence results in caller order; it never interpolates names as SQL or
 patterns. It reports installed extension name/version/schema with fixed bounds
 (256 entries, 256 version bytes), plus exact `pg_class` relation facts for the
 selected schemas: name, raw `relkind`, persistence, partition status, RLS
-flags, and policy count (at most 10,000 rows). Unknown relation-kind codes
-remain raw observations. Policy expressions/roles are not collected; these
-flags/counts are not a security baseline. It does not traverse dependencies or
-capture owners, ACLs, columns, or data. Only PostgreSQL major 17 is accepted;
+flags/policy count, and total/user-trigger counts (at most 10,000 rows).
+Unknown relation-kind codes remain raw observations. Policy expressions/roles
+and trigger definitions/functions are not collected; these flags/counts are not
+a security or behavior baseline. It does not traverse dependencies or capture
+owners, ACLs, columns, or data. Only PostgreSQL major 17 is accepted;
 this is not a full inventory, tenant-identity proof, or hosted-support claim.
 
 ### TDD and verification
@@ -1125,8 +1126,8 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
   boundaries, a decoy, and a missing name. The bounded extension inventory
   includes the default `plpgsql` extension. Selected-schema relation facts cover
   tables, indexes, views, materialized views, sequences, partitions, a
-  same-name decoy in an unselected schema, and RLS enabled/forced plus policy
-  count facts. It also
+  same-name decoy in an unselected schema, RLS enabled/forced plus policy
+  counts, and a synthetic user-trigger count. It also
   rejects a wrong CA, hostname mismatch, and non-TLS connection. A custom
   resolver/dialer force the synthetic direct-route hostname to IPv4 loopback.
   It requires `SPARC_TEST_PG_BIN` naming an approved local PostgreSQL bin

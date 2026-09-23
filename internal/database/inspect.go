@@ -45,6 +45,8 @@ type RelationObservation struct {
 	RowSecurityEnabled bool
 	ForceRowSecurity   bool
 	PolicyCount        int64
+	TriggerCount       int64
+	UserTriggerCount   int64
 }
 
 type CatalogObservation struct {
@@ -177,12 +179,20 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 			       relation.relforcerowsecurity,
 			       (SELECT pg_catalog.count(*)
 			        FROM pg_catalog.pg_policy AS rls_policy
-			        WHERE rls_policy.polrelid = relation.oid)
+			        WHERE rls_policy.polrelid = relation.oid),
+			       trigger_summary.trigger_count,
+			       trigger_summary.user_trigger_count
 			FROM unnest($1::text[]) WITH ORDINALITY AS requested(name, ordinal)
 			JOIN pg_catalog.pg_namespace AS namespace
 			  ON namespace.nspname::text COLLATE "C" = requested.name COLLATE "C"
 			JOIN pg_catalog.pg_class AS relation
 			  ON relation.relnamespace = namespace.oid
+			CROSS JOIN LATERAL (
+			  SELECT pg_catalog.count(*) AS trigger_count,
+			         pg_catalog.count(*) FILTER (WHERE NOT trigger_row.tgisinternal) AS user_trigger_count
+			  FROM pg_catalog.pg_trigger AS trigger_row
+			  WHERE trigger_row.tgrelid = relation.oid
+			) AS trigger_summary
 			ORDER BY requested.ordinal, relation.relname::text COLLATE "C"
 			LIMIT $2
 		`, schemaNames, maxObservedRelations+1)
@@ -191,7 +201,7 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		}
 		for relationRows.Next() {
 			var relation RelationObservation
-			if err := relationRows.Scan(&relation.Schema, &relation.Name, &relation.Kind, &relation.Persistence, &relation.IsPartition, &relation.RowSecurityEnabled, &relation.ForceRowSecurity, &relation.PolicyCount); err != nil {
+			if err := relationRows.Scan(&relation.Schema, &relation.Name, &relation.Kind, &relation.Persistence, &relation.IsPartition, &relation.RowSecurityEnabled, &relation.ForceRowSecurity, &relation.PolicyCount, &relation.TriggerCount, &relation.UserTriggerCount); err != nil {
 				relationRows.Close()
 				return observation, contextOr(ctx, ErrCatalogObservation)
 			}

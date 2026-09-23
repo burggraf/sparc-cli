@@ -79,7 +79,7 @@ func TestObserveCatalogOnDisposablePostgres(t *testing.T) {
 		t.Fatalf("relation observeCatalog() = %v", err)
 	}
 	wantRelations := []RelationObservation{
-		{Schema: "literal schema", Name: "base table", Kind: "r", Persistence: "p"},
+		{Schema: "literal schema", Name: "base table", Kind: "r", Persistence: "p", TriggerCount: 1, UserTriggerCount: 1},
 		{Schema: "literal schema", Name: "base table_pkey", Kind: "i", Persistence: "p"},
 		{Schema: "literal schema", Name: "partitioned child", Kind: "r", Persistence: "p", IsPartition: true},
 		{Schema: "literal schema", Name: "partitioned table", Kind: "p", Persistence: "p"},
