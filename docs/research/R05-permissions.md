@@ -1,6 +1,6 @@
 # R05 — Destination permissions and ordinary `public` applications
 
-**Status: open; public documentation reviewed, no hosted baseline or permission-preflight behavior qualified.** This record defines the hazards and local evidence gates for Task 10. It does not choose a universal Supabase ACL profile or claim that a matched catalog snapshot is safe.
+**Status: open; public documentation reviewed and one local exposure counterexample reproduced. No hosted baseline or permission-preflight behavior is qualified.** This record defines the hazards and local evidence gates for Task 10. It does not choose a universal Supabase ACL profile or claim that a matched catalog snapshot is safe.
 
 **Reviewed:** 2026-09-23. PostgreSQL 17 privilege, GRANT, default-privilege, role, membership, RLS, and catalog documentation; current public Supabase API-security, RLS, and role guidance. No project, database endpoint, credential, or hosted resource was used.
 
@@ -28,10 +28,11 @@
 4. Refuse before mutation on an unexpected owner, grant, default, membership option, RLS state, or unsupported managed role. Do not auto-revoke, normalize, or strip ownership/ACLs to make a restore succeed.
 5. Test the negative case where a global default `SELECT` grant to `PUBLIC` causes a newly created non-RLS table with synthetic data to be readable by an otherwise unauthorized role. A successful SQL/restore exit must not pass preflight when this exposure exists.
 
-## Local evidence plan; not yet run for R05
+## Local evidence and remaining plan
 
-- Use only the approved disposable PostgreSQL 17 loopback fixture and synthetic roles/data. Create separate owner, intended reader, and unauthorized reader roles.
-- Reproduce the global default-grant exposure above and prove the unauthorized read succeeds before the preflight is added. Then test that preflight rejects before any target sentinel changes.
+**Executed 2026-09-23:** `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run '^TestLocalFixtureReproducesGlobalDefaultPublicSelect$' -count=1 -v` passed with PostgreSQL 17.9. The disposable TLS loopback fixture created a `NOLOGIN` owner with global default `SELECT TO PUBLIC`, then a non-RLS table and synthetic row. A separate ordinary login role, not a member of the owner role, read the canary. This proves the default-grant exposure mechanism only; no actual SPARC restore or preflight ran.
+
+- Run the approved disposable PostgreSQL 17 fixture with synthetic roles/data. Next, test that a future preflight rejects this exposure before any target sentinel changes.
 - Add focused local cases for NULL versus empty/current ACLs, column-only grants, `PUBLIC`, grant options/grantors, global versus per-schema defaults, PG17 membership flags, RLS enabled/forced and missing-policy behavior, owners/BYPASSRLS, and security-definer/view behavior. Do not treat this matrix as hosted Supabase qualification.
 - No native client payload, hosted connection, or restore command is authorized by this record.
 

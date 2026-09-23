@@ -4,9 +4,66 @@ package database
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
+
+func TestLocalFixtureReproducesGlobalDefaultPublicSelect(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	sql := "CREATE ROLE sparc_creator NOLOGIN;\n" +
+		"CREATE ROLE sparc_unapproved LOGIN PASSWORD '" + fixturePassword + "';\n" +
+		"GRANT CREATE ON SCHEMA public TO sparc_creator;\n" +
+		"GRANT USAGE ON SCHEMA public TO PUBLIC;\n" +
+		"ALTER DEFAULT PRIVILEGES FOR ROLE sparc_creator GRANT SELECT ON TABLES TO PUBLIC;\n" +
+		"SET ROLE sparc_creator;\n" +
+		"CREATE TABLE public.sparc_global_default_canary (value text NOT NULL);\n" +
+		"INSERT INTO public.sparc_global_default_canary VALUES ('synthetic-public-canary');\n" +
+		"RESET ROLE;\n"
+	cleanHome := filepath.Join(filepath.Dir(fixture.caPath), "psql-home")
+	if err := os.Mkdir(cleanHome, 0700); err != nil {
+		t.Fatal("unable to create local fixture psql home")
+	}
+	t.Setenv("HOME", cleanHome)
+	t.Setenv("USERPROFILE", cleanHome)
+	t.Setenv("APPDATA", cleanHome)
+	runFixtureCommandWithInput(t, []byte(sql), fixture.binDir, "psql", fmt.Sprintf("host=%s hostaddr=127.0.0.1 port=%d user=postgres dbname=postgres sslmode=verify-full sslrootcert='%s'", fixture.params.Host, fixture.port, fixture.caPath), "-v", "ON_ERROR_STOP=1")
+
+	conn, err := pgx.ConnectConfig(context.Background(), fixture.configForUser(t, fixture.caPath, "sparc_unapproved"))
+	if err != nil {
+		t.Fatalf("local non-superuser probe could not connect: %v", err)
+	}
+	defer conn.Close(context.Background())
+	var currentUser, owner, value string
+	var isSuperuser, isCreatorMember, hasPublicSelect bool
+	const query = `
+		SELECT current_user::text,
+		       role.rolsuper,
+		       pg_catalog.pg_has_role(current_user, 'sparc_creator', 'MEMBER'),
+		       pg_catalog.pg_get_userbyid(relation.relowner),
+		       EXISTS (
+		         SELECT 1
+		         FROM pg_catalog.aclexplode(relation.relacl) AS acl
+		         WHERE acl.grantee = 0 AND acl.privilege_type = 'SELECT'
+		       ),
+		       canary.value
+		FROM public.sparc_global_default_canary AS canary
+		JOIN pg_catalog.pg_class AS relation
+		  ON relation.oid = 'public.sparc_global_default_canary'::pg_catalog.regclass
+		JOIN pg_catalog.pg_roles AS role
+		  ON role.rolname = current_user
+	`
+	if err := conn.QueryRow(context.Background(), query).Scan(&currentUser, &isSuperuser, &isCreatorMember, &owner, &hasPublicSelect, &value); err != nil {
+		t.Fatalf("local default-grant exposure probe failed: %v", err)
+	}
+	if currentUser != "sparc_unapproved" || isSuperuser || isCreatorMember || owner != "sparc_creator" || !hasPublicSelect || value != "synthetic-public-canary" {
+		t.Fatalf("counterexample did not prove public exposure: user=%q superuser=%t creator_member=%t owner=%q public_select=%t value=%q", currentUser, isSuperuser, isCreatorMember, owner, hasPublicSelect, value)
+	}
+}
 
 func TestObserveCatalogRejectsWrongTrust(t *testing.T) {
 	fixture := newPostgresFixture(t)

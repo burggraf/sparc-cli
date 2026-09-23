@@ -3,6 +3,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -172,7 +173,13 @@ func poisonFixtureHome(t *testing.T, homeDir, appDataDir string) {
 
 func (f *postgresFixture) config(t *testing.T, caPath string) *pgx.ConnConfig {
 	t.Helper()
+	return f.configForUser(t, caPath, f.params.User)
+}
+
+func (f *postgresFixture) configForUser(t *testing.T, caPath, user string) *pgx.ConnConfig {
+	t.Helper()
 	params := f.params
+	params.User = user
 	params.SSLRootCert = caPath
 	config, err := NewConnConfig(params, []byte(fixturePassword))
 	if err != nil {
@@ -241,8 +248,11 @@ func runFixtureCommandWithInput(t *testing.T, input []byte, binDir, name string,
 	cmd := exec.CommandContext(ctx, fixtureBinaryPath(binDir, name), args...)
 	cmd.Env = os.Environ()
 	cmd.Stdin = strings.NewReader(string(input))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("local PostgreSQL fixture command %s failed", name)
+		diagnostic := strings.ReplaceAll(stderr.String(), fixturePassword, "[redacted]")
+		t.Fatalf("local PostgreSQL fixture command %s failed: %s", name, strings.TrimSpace(diagnostic))
 	}
 }
 
