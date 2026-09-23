@@ -16,28 +16,26 @@ sparc restore # unavailable
 
 `help`, `version`, and `verify` do not access the network. Verification passphrases are requested without terminal echo, or can be read from an explicitly selected private file.
 
-## Try the local recovery rehearsal
+## Try developer-only backup/restore
 
-This **developer-only integration workflow**, not the product backup command, creates two disposable databases in a new local PostgreSQL 17 cluster, dumps a synthetic schema, encrypts and verifies an archive, deletes the source database, then restores rows and sequence state into the fresh target. It contacts no hosted project. You need Go and trusted local PostgreSQL 17 binaries (`initdb`, `postgres`, `pg_ctl`, `psql`, `pg_dump`, `pg_restore`). Run as a normal user, not root:
+`sparc-localdemo` is a separate developer-only build target; it is not linked into normal `sparc` release builds. It creates a fresh temporary PostgreSQL 17 cluster listening only on `127.0.0.1`, creates fixed synthetic source/target databases, streams one schema into a private encrypted archive, deletes the source, and restores/checks rows and sequence state in the fresh target. No database URL is accepted, and no hosted project is contacted. The demo cluster uses trust authentication and TLS off only because it contains synthetic data and is loopback-only; this is not a connection mode for external databases. The encrypted archive remains at the requested path and is declared incomplete.
 
-```sh
-SPARC_TEST_PG_BIN=/absolute/path/to/postgresql-17/bin go test -tags=integration ./internal/database -run '^TestLocalRecoveryRehearsal$' -count=1 -v
-```
-
-On macOS with Homebrew PostgreSQL 17, use `/opt/homebrew/opt/postgresql@17/bin` if that path exists. On Windows PowerShell, set `$env:SPARC_TEST_PG_BIN` to your approved PostgreSQL 17 `bin` directory, then run the same `go test` command. **If `SPARC_TEST_PG_BIN` is unset, the test skips; a green skipped test proves nothing.** By default it uses temporary files and removes the archive. On macOS/Unix, to keep a synthetic encrypted archive for the offline CLI check, create a private directory and set `SPARC_TEST_ARCHIVE_OUT` to a new path inside it:
+You need Go and an explicitly selected local PostgreSQL 17 `bin` directory containing `initdb`, `postgres`, `pg_ctl`, `psql`, `pg_dump`, and `pg_restore`. Run as a normal user, not root. Create a private output parent first; the command prompts for the passphrase without echo and refuses to overwrite an existing archive:
 
 ```sh
 mkdir -m 700 "$HOME/sparc-demo"
-umask 077
-printf '%s' 'synthetic-rehearsal-passphrase' > "$HOME/sparc-demo/passphrase"
 SPARC_TEST_PG_BIN=/absolute/path/to/postgresql-17/bin \
-SPARC_TEST_ARCHIVE_OUT="$HOME/sparc-demo/archive" \
-  go test -tags=integration ./internal/database -run '^TestLocalRecoveryRehearsal$' -count=1 -v
-go build -o ./sparc ./cmd/sparc
-./sparc verify --archive "$HOME/sparc-demo/archive" --passphrase-file "$HOME/sparc-demo/passphrase"
+  go run -tags=localdemo ./cmd/sparc-localdemo --archive "$HOME/sparc-demo/archive"
 ```
 
-The demo archive is synthetic and explicitly **incomplete**; `verify` prints `Integrity: passed` and exits 3 to signal incomplete capture. Never reuse the demo passphrase. This narrow local proof does not establish Supabase support, production client packaging, safe arbitrary restores, or full-project coverage.
+On macOS with Homebrew PostgreSQL 17, use `/opt/homebrew/opt/postgresql@17/bin` if that path exists. Then verify the retained archive offline (it prompts for the passphrase again and exits 3 because the capture is intentionally incomplete):
+
+```sh
+go build -o ./sparc ./cmd/sparc
+./sparc verify --archive "$HOME/sparc-demo/archive"
+```
+
+The separate integration test is also available: `SPARC_TEST_PG_BIN=/absolute/path/to/postgresql-17/bin go test -tags=integration ./internal/database -run '^TestLocalRecoveryRehearsal$' -count=1 -v`. If the variable is unset, it skips. Native Windows runtime for this demo remains unqualified. This workflow does not enable `sparc backup`/`restore`, hosted Supabase support, production client packaging, arbitrary database connections, or full-project coverage.
 
 ## Development
 

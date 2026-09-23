@@ -1193,47 +1193,50 @@ memberships, RLS behavior, or drift. Full Tasks 10–11 remain open. No hosted
 project or credential was used; hosted public/Auth qualification waits for Task
 12 and separate exact authorization.
 
-## Task 11 — First runnable local recovery rehearsal and offline CLI verify
+## Task 11 — Developer-only backup/restore rehearsal and offline CLI verify
 
-**Status: local developer proof and offline archive verification only; no CLI
-backup/restore or hosted support.** `TestLocalRecoveryRehearsal` in
-`internal/database/recovery_integration_test.go` uses explicitly selected local
-PostgreSQL 17.9 binaries and a fresh disposable loopback/TLS cluster. It creates
-synthetic data, runs `pg_dump -Fc`, privately stages the plaintext dump, creates
-an age-encrypted archive, verifies it offline (including wrong-passphrase
-refusal), deletes the staging file and source database, then restores into a
-fresh target and checks rows and sequence state. By default all artifacts are
-temporary. `SPARC_TEST_ARCHIVE_OUT` optionally retains the encrypted synthetic
-archive under an existing private parent directory. The archive is always
-marked **incomplete**: this is one schema, not a Supabase project. Test-only
-native commands are not the production trusted client runner or approved
-payload; source and target share an isolated cluster.
+**Status: local synthetic workflow only; normal CLI backup/restore and hosted
+support remain unavailable.** `sparc-localdemo` is a separate binary target
+behind `-tags=localdemo`; the normal `sparc` release build does not include it.
+It requires the explicitly configured `SPARC_TEST_PG_BIN`, validates all six
+PostgreSQL tools as major 17, and executes their absolute paths with a sanitized
+environment. It creates a private temporary cluster bound only to IPv4
+loopback, creates fixed synthetic source/target databases, streams `pg_dump`
+output directly into the encrypted archive writer, verifies the archive, drops
+the source, and restores into the fresh target. It checks rows and sequence
+state, stops the cluster, and removes its private temporary files. Trust auth
+and TLS-off are confined to this synthetic loopback cluster. The retained
+archive is one schema and marked **incomplete**. No user DB URL, project
+credential, or hosted service is accepted.
 
-`sparc verify --archive DIR [--passphrase-file FILE]` is now an offline CLI
-operation backed by `internal/verify`. It accepts a hidden terminal passphrase
-or an explicitly selected private file, reports integrity separately from the
-archive's declared capture completeness, and returns exit 3 for intact but
-incomplete archives. This does not prove recoverability or full project
-coverage. `backup` and `restore` remain unavailable.
+The integration test `TestLocalRecoveryRehearsal` calls the same runtime flow
+and removes its archive with the test temporary directory. The separate
+product command `sparc verify` checks
+archive bytes offline, accepts a hidden terminal passphrase or private file,
+reports declared capture completeness, and exits 3 for intact-but-incomplete
+archives. A passing verify is not a recovery or project-coverage claim.
 
-**TDD:** the first CLI test failed because `verify` still hit the scaffold
-arity rejection. After wiring safe credential input and offline verification,
-CLI tests cover complete/incomplete declarations, wrong-passphrase redaction,
-non-terminal stdin refusal, and help. A `/tmp`-symlink output-path attempt was
-rejected by private-storage checks; the documented `$HOME` private-directory
-flow passed. End-to-end test: retained the synthetic archive, built `sparc`,
-then verified it through the CLI; output reported integrity passed, incomplete
-capture, one component, exit 3.
+**TDD and debugging:** converting the test to the runtime helper first failed
+compilation because `internal/localdemo` did not yet exist. The first runtime
+attempt failed because pgx rejected the `hostaddr` connection option; fixture
+state checks now use the explicitly selected `psql` client under the sanitized
+environment. The final tagged
+integration rehearsal and `go run -tags=localdemo ./cmd/sparc-localdemo` both
+completed the source-delete/fresh-target restore. A compiled `sparc verify`
+reported integrity passed, incomplete capture, one component, exit 3.
 
-Fresh verification: `go test -mod=readonly ./... -count=1 -timeout=240s`,
-`go test -race -mod=readonly ./internal/cli -count=1 -timeout=240s`, `go vet
--mod=readonly ./...`, CLI build, Windows AMD64 and Darwin arm64 CLI test
-cross-compiles, and the full PostgreSQL-tagged database suite — passed on
-macOS. Native Windows runtime remains unqualified. No hosted project or
-credential was used.
+Fresh verification: full default and localdemo-tagged test suites, CLI and
+localdemo race suites, default/tagged `go vet`, normal `sparc` and tagged demo
+builds, Windows AMD64 and Darwin arm64 localdemo package test cross-compiles,
+Windows AMD64 demo-command test cross-compile, full PostgreSQL-tagged database
+suite, and retained-archive CLI verification — passed on macOS arm64. The
+normal build list excludes the developer-only packages. Native Windows runtime
+remains unqualified. The operator has
+offered future Supabase test projects; no hosted project or credential has been
+used or authorized yet.
 
-**Next gate:** production `backup`/`restore` still require an approved and
-qualified PostgreSQL client payload plus the restricted runner's typed dump,
-restore, and stream support. The production inventory remains empty; no PATH
-fallback is allowed. Keep hosted work gated on the separate Task 12
-authorization.
+**Next gate:** a product backup/restore needs a separately approved and
+qualified PostgreSQL client payload plus typed dump/restore streaming in the
+production runner. Its inventory remains empty; no PATH fallback is allowed.
+When hosted testing is ready, request a named disposable source/target, exact
+allowed actions, and time/cost limits before connecting.
