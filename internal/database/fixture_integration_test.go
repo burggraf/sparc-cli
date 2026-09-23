@@ -62,7 +62,12 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 		t.Fatal("unable to create local fixture home")
 	}
 	t.Setenv("HOME", homeDir)
-
+	t.Setenv("USERPROFILE", homeDir)
+	appDataDir := filepath.Join(root, "appdata")
+	if err := os.Mkdir(appDataDir, 0700); err != nil {
+		t.Fatal("unable to create local fixture application-data directory")
+	}
+	t.Setenv("APPDATA", appDataDir)
 	ref := testProjectRef
 	host := "db." + ref + ".supabase.co"
 	caPath, wrongCAPath, certPath, keyPath := writeFixtureCertificates(t, root, host)
@@ -121,6 +126,8 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 		"CREATE POLICY \"owner policy\" ON \"literal schema\".\"rls table\" USING (owner_name = current_user) WITH CHECK (owner_name = current_user);\n"
 	connInfo := fmt.Sprintf("host=127.0.0.1 port=%d user=postgres dbname=postgres sslmode=require", port)
 	runFixtureCommandWithInput(t, []byte(sql), binDir, "psql", connInfo, "-v", "ON_ERROR_STOP=1")
+	// Poison default credential/TLS files only after psql has bootstrapped the fixture.
+	poisonFixtureHome(t, homeDir, appDataDir)
 
 	return &postgresFixture{
 		binDir:      binDir,
@@ -137,6 +144,29 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 			SSLMode:            "verify-full",
 			SSLRootCert:        caPath,
 		},
+	}
+}
+
+func poisonFixtureHome(t *testing.T, homeDir, appDataDir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(homeDir, ".pgpass"), []byte("*:*:*:*:wrong-password\n"), 0600); err != nil {
+		t.Fatal("unable to create local fixture passfile")
+	}
+	clientTLSFiles := map[string]string{
+		"root.crt": "not a certificate\n", "postgresql.crt": "not a certificate\n", "postgresql.key": "not a private key\n",
+	}
+	for _, dir := range []string{filepath.Join(homeDir, ".postgresql"), filepath.Join(appDataDir, "postgresql")} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal("unable to create local fixture PostgreSQL home")
+		}
+		if err := os.WriteFile(filepath.Join(dir, "pgpass.conf"), []byte("*:*:*:*:wrong-password\n"), 0600); err != nil {
+			t.Fatal("unable to create local fixture application-data passfile")
+		}
+		for name, contents := range clientTLSFiles {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0600); err != nil {
+				t.Fatal("unable to create local fixture TLS fallback")
+			}
+		}
 	}
 }
 

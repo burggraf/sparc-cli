@@ -1131,8 +1131,10 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
   same-name decoy in an unselected schema, RLS enabled/forced plus policy
   counts, a synthetic user-trigger count, and SQL/PLpgSQL routine metadata
   including a security-definer routine. It also
-  rejects a wrong CA, hostname mismatch, and non-TLS connection. A custom
-  resolver/dialer force the synthetic direct-route hostname to IPv4 loopback.
+  rejects a wrong CA, hostname mismatch, untrusted system roots, and non-TLS
+  connections. Poisoned default passfile/client-cert/key/root files do not
+  interfere with the explicit pgx config. A custom resolver/dialer force the
+  synthetic direct-route hostname to IPv4 loopback.
   It requires `SPARC_TEST_PG_BIN` naming an approved local PostgreSQL bin
   directory; it creates/removes its cluster and private certificates. The
   fixture now bootstraps over TLS on IPv4 loopback (no Unix socket) and Windows

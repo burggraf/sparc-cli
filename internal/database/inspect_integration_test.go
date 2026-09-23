@@ -15,6 +15,13 @@ func TestObserveCatalogRejectsWrongTrust(t *testing.T) {
 	}
 }
 
+func TestObserveCatalogRejectsUntrustedSystemRoot(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	if _, err := observeCatalog(context.Background(), fixture.config(t, "system"), nil); err != ErrDatabaseConnect {
+		t.Fatalf("system-root fixture error = %v, want database connection failure", err)
+	}
+}
+
 func TestObserveCatalogRejectsWrongHostname(t *testing.T) {
 	fixture := newPostgresFixture(t)
 	config := fixture.config(t, fixture.caPath)

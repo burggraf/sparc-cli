@@ -116,8 +116,10 @@ total/user-trigger counts, and bounded routine identity/language/security-
 definer metadata. Policy roles/expressions and routine/trigger bodies are not
 captured, so this is not security or behavior baseline evidence, dependency
 closure, or a column inventory.
-The durable opt-in test also rejects a wrong CA, hostname mismatch, and a
-non-TLS connection rejected by the fixture's `pg_hba.conf`. It requires an
+The durable opt-in test also rejects a wrong CA, hostname mismatch, an
+untrusted CA under system roots, and a non-TLS connection rejected by the
+fixture's `pg_hba.conf`. It uses poisoned default passfile/client-TLS files and
+still succeeds with the explicit pgx config. It requires an
 approved local `SPARC_TEST_PG_BIN` directory, creates/removes its own cluster
 and private certs, and bootstraps over TLS on IPv4 loopback without a Unix
 socket. The integration sources cross-compile for Windows but have not been
@@ -234,9 +236,9 @@ project identity. They are not production support claims.
 
 | Area | Evidence now available | Still required |
 | --- | --- | --- |
-| pgx TLS | v5.8.0 local `verify-full` over IPv4/IPv6; v5.11.0 durable local fixture passes explicit-CA `verify-full`, wrong-CA, hostname-mismatch, and non-TLS refusal checks | Qualify system-root behavior and supported-platform trust provisioning; add native Windows runtime coverage |
+| pgx TLS | v5.8.0 local `verify-full` over IPv4/IPv6; v5.11.0 durable local fixture passes explicit-CA `verify-full`, wrong-CA, hostname-mismatch, untrusted-system-root, and non-TLS refusal checks | Qualify positive system-root behavior and supported-platform trust provisioning; execute native Windows runtime coverage |
 | libpq TLS | psql 17.9 local `verify-full` positive/negative cases over IPv4/IPv6 | Test the exact selected/signed client payload and supported Windows/macOS runtime behavior |
-| Environment | v5.11.0 builder refuses all `PG*`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` variables; parser key allowlist, explicit route/TLS fields, empty passfile/servicefile/client-cert settings, and fixed runtime params are unit-tested. The local fixture also ignored poisoned home passfile/client-cert/root files. | Reproduce as durable opt-in test; qualify native-child environment separately; review process-environment mutation assumptions |
+| Environment | v5.11.0 builder refuses all `PG*`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` variables; parser key allowlist, explicit route/TLS fields, empty passfile/servicefile/client-cert settings, and fixed runtime params are unit-tested. The durable local fixture ignores poisoned home/app-data passfile/client-cert/root files. | Qualify native-child environment separately; review process-environment mutation assumptions |
 | Route mapping | Current public docs describe direct and shared-pooler forms | Verify actual project Connect values, credential/user binding, and backend identity under separately authorized hosted test |
 | Pooler | Public docs distinguish direct/session/transaction routes and their constraints | Test qualified session routing; transaction mode remains refused |
 | Catalog/selection | v5.11.0 durable local read-only transaction observes TLS/version, exact literal schema selectors, bounded extensions/routines, and selected-schema relation, partition, RLS/policy, and trigger-count facts | Expand only reviewed structural/security/dependency inventory; policy/trigger semantics, routine bodies, and dependency closure remain unqualified |
