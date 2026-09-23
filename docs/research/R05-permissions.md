@@ -1,6 +1,6 @@
 # R05 — Destination permissions and ordinary `public` applications
 
-**Status: open; public documentation reviewed and a local version-1 `PUBLIC SELECT` guard is implemented. The full permission baseline and hosted preflight remain unqualified.** This record defines the hazards and local evidence gates for Task 10. It does not choose a universal Supabase ACL profile or claim that a matched catalog snapshot is safe.
+**Status: open; public documentation reviewed, a local version-1 `PUBLIC SELECT` guard is implemented, and direct relation-grant detection now has an isolated local fixture. The full permission baseline and hosted preflight remain unqualified.** This record defines the hazards and local evidence gates for Task 10. It does not choose a universal Supabase ACL profile or claim that a matched catalog snapshot is safe.
 
 **Reviewed:** 2026-09-23. PostgreSQL 17 privilege, GRANT, default-privilege, role, membership, RLS, and catalog documentation; current public Supabase API-security, RLS, and role guidance. No project, database endpoint, credential, or hosted resource was used.
 
@@ -38,9 +38,15 @@ This first guard does **not** evaluate named roles such as Supabase `anon`, `aut
 
 **Executed 2026-09-23:** `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run 'TestLocalFixtureReproducesGlobalDefaultPublicSelect|TestObserveCatalogOnDisposablePostgres' -count=1 -v` passed with PostgreSQL 17.9. The disposable TLS loopback fixture created a `NOLOGIN` owner with global default `SELECT TO PUBLIC`, then a non-RLS table and synthetic row. A separate ordinary login role, not a member of the owner role, read the canary. A second table has a column-only `PUBLIC SELECT` grant. The catalog check detected the default, resulting relation, and column grants; `CheckTargetSecurityV1` refused them. The clean fixture passed the narrow guard. This is local database evidence only; no actual SPARC restore or hosted project was used.
 
-**Verification 2026-09-23:** `go test -mod=readonly ./... -count=1 -timeout=240s`, tagged PostgreSQL integration tests, serial database race tests, `go vet`, CLI build, Windows AMD64 and Darwin arm64 integration-test cross-compiles, formatting, and `git diff --check` passed.
+**Verification 2026-09-23:** `go test -mod=readonly ./... -count=1 -timeout=240s`, tagged PostgreSQL integration tests, serial database race tests, `go vet`, CLI build, Windows AMD64 and Darwin arm64 integration-test cross-compiles, formatting, and `git diff --check` passed. A new isolated PostgreSQL 17.9 case also passes:
 
-- Add an isolated direct relation-grant case and confirm refusal happens before any future restore mutation. Then address named roles, ACL distinctions, membership, ownership, RLS and application collisions as separate reviewed facts. Do not treat the current guard as a complete profile.
+```sh
+SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run '^TestObserveCatalogRejectsDirectPublicRelationSelect$' -count=1 -v
+```
+
+The test directly grants `SELECT` on one public table to `PUBLIC`, observes only the object-level grant (no default or column grants), and confirms `CheckTargetSecurityV1` refuses. A separate ordinary login role reads the synthetic canary, reproducing the exposure. This is read-only preflight evidence after fixture seeding; it does **not** prove refusal before an actual restore mutation because no product restore path calls the guard.
+
+- Next, assess named roles, ACL distinctions, membership, ownership, RLS and application collisions as separate reviewed facts. Do not treat the current guard as a complete profile. Wire it to a restore gate only when a real restore pipeline exists; do not add a mock mutation wrapper.
 - Add focused local cases for NULL versus empty/current ACLs, column-only grants, `PUBLIC`, grant options/grantors, global versus per-schema defaults, PG17 membership flags, RLS enabled/forced and missing-policy behavior, owners/BYPASSRLS, and security-definer/view behavior. Do not treat this matrix as hosted Supabase qualification.
 - No native client payload, hosted connection, or restore command is authorized by this record.
 

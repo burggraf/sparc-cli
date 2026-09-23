@@ -1188,10 +1188,20 @@ The new local `CheckTargetSecurityV1` refuses `PUBLIC SELECT` in selected
 relation/column ACLs and relevant future table defaults; the TLS loopback test
 reproduces the exposure and confirms refusal, while the clean fixture passes.
 This is one narrow guard—not a full security baseline, not wired to restore, and
-not hosted qualification. It does not assess named Supabase roles, ownership,
-memberships, RLS behavior, or drift. Full Tasks 10–11 remain open. No hosted
-project or credential was used; hosted public/Auth qualification waits for Task
-12 and separate exact authorization.
+not hosted qualification. On 2026-09-23 a separate PG17.9 loopback integration
+test directly grants `SELECT` on one public table to `PUBLIC`, confirms the
+catalog reports only the relation-level case, verifies the guard refuses, and
+shows an unrelated login role can read the synthetic canary. The focused
+command
+`SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run '^TestObserveCatalogRejectsDirectPublicRelationSelect$' -count=1 -v`
+and full tagged database suite passed on macOS. Full
+`go test -mod=readonly ./... -count=1 -timeout=240s` and
+`go vet -mod=readonly ./...` also passed. There is still no product restore
+path on which to prove preflight before mutation; no mock mutation wrapper was
+added. Named Supabase roles, ownership, memberships, RLS behavior, drift and
+full Tasks 10–11 remain open.
+No hosted project or credential was used; hosted public/Auth qualification
+waits for Task 12 and separate exact authorization.
 
 ## Task 11 — Developer-only backup/restore rehearsal and offline CLI verify
 

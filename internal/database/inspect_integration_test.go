@@ -79,6 +79,47 @@ func TestLocalFixtureReproducesGlobalDefaultPublicSelect(t *testing.T) {
 	}
 }
 
+func TestObserveCatalogRejectsDirectPublicRelationSelect(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal("unable to connect to local fixture as administrator")
+	}
+	defer admin.Close(ctx)
+	for _, statement := range []string{
+		"CREATE ROLE sparc_direct_reader LOGIN PASSWORD '" + fixturePassword + "'",
+		"CREATE TABLE public.sparc_direct_grant_canary (value text NOT NULL)",
+		"INSERT INTO public.sparc_direct_grant_canary VALUES ('synthetic-direct-public-canary')",
+		"GRANT SELECT ON TABLE public.sparc_direct_grant_canary TO PUBLIC",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to seed direct-grant fixture")
+		}
+	}
+
+	observation, err := observeCatalog(ctx, fixture.config(t, fixture.caPath), []string{"public"})
+	if err != nil {
+		t.Fatal("unable to observe direct-grant fixture")
+	}
+	if !observation.Security.Observed || !observation.Security.PublicSelectObjects || observation.Security.PublicSelectDefaults || observation.Security.PublicSelectColumns {
+		t.Fatalf("direct relation grant was not isolated in the observation: %+v", observation.Security)
+	}
+	if err := CheckTargetSecurityV1(observation); !errors.Is(err, ErrUnsafeTargetSecurityProfile) {
+		t.Fatalf("preflight error = %v, want unsafe-target refusal", err)
+	}
+
+	reader, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "sparc_direct_reader"))
+	if err != nil {
+		t.Fatal("unable to connect as the unrelated local reader")
+	}
+	defer reader.Close(ctx)
+	var value string
+	if err := reader.QueryRow(ctx, "SELECT value FROM public.sparc_direct_grant_canary").Scan(&value); err != nil || value != "synthetic-direct-public-canary" {
+		t.Fatal("direct PUBLIC SELECT grant did not reproduce the synthetic exposure")
+	}
+}
+
 func TestObserveCatalogRejectsWrongTrust(t *testing.T) {
 	fixture := newPostgresFixture(t)
 	if _, err := observeCatalog(context.Background(), fixture.config(t, fixture.wrongCAPath), nil); err != ErrDatabaseConnect {
