@@ -111,10 +111,11 @@ multibyte UTF-8 names, a decoy, and a missing name. The bounded extension
 inventory reports the default `plpgsql` name, version, and schema. Selected
 schema relation facts cover tables, indexes, views, materialized views,
 sequences, parent/child partitions, and a same-name relation in an unselected
-decoy schema. It also observes RLS enabled/forced flags, policy counts, and
-total/user-trigger counts. Policy roles/expressions and trigger
-definitions/functions are not captured, so this is not security or behavior
-baseline evidence, dependency closure, or a column inventory.
+decoy schema. It also observes RLS enabled/forced flags, policy counts,
+total/user-trigger counts, and bounded routine identity/language/security-
+definer metadata. Policy roles/expressions and routine/trigger bodies are not
+captured, so this is not security or behavior baseline evidence, dependency
+closure, or a column inventory.
 The durable opt-in test also rejects a wrong CA, hostname mismatch, and a
 non-TLS connection rejected by the fixture's `pg_hba.conf`. It requires an
 approved local `SPARC_TEST_PG_BIN` directory, creates/removes its own cluster
@@ -237,7 +238,7 @@ project identity. They are not production support claims.
 | Environment | v5.11.0 builder refuses all `PG*`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` variables; parser key allowlist, explicit route/TLS fields, empty passfile/servicefile/client-cert settings, and fixed runtime params are unit-tested. The local fixture also ignored poisoned home passfile/client-cert/root files. | Reproduce as durable opt-in test; qualify native-child environment separately; review process-environment mutation assumptions |
 | Route mapping | Current public docs describe direct and shared-pooler forms | Verify actual project Connect values, credential/user binding, and backend identity under separately authorized hosted test |
 | Pooler | Public docs distinguish direct/session/transaction routes and their constraints | Test qualified session routing; transaction mode remains refused |
-| Catalog/selection | v5.11.0 durable local read-only transaction observes TLS/version, exact literal schema selectors, bounded extensions, and selected-schema relation/partition, RLS/policy-count, and trigger-count facts | Expand only reviewed structural/security/dependency inventory; policy/trigger semantics and general closure remain unqualified |
+| Catalog/selection | v5.11.0 durable local read-only transaction observes TLS/version, exact literal schema selectors, bounded extensions/routines, and selected-schema relation, partition, RLS/policy, and trigger-count facts | Expand only reviewed structural/security/dependency inventory; policy/trigger semantics, routine bodies, and dependency closure remain unqualified |
 | Trust policy | Explicit private CA works with local pgx v5.8.0 and v5.11.0 fixtures; v5.11.0 system-root parsing is unit-tested only; `require`/`verify-ca` are insufficient | Choose and test CA/system trust provisioning, rotation, and failure behavior on all supported platforms |
 | Version | Durable local fixture reports `server_version_num=170009`; unit gate accepts only major 17 | Add durable wrong-major integration refusal and prove gate before capture/restore |
 

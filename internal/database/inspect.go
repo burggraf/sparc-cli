@@ -8,13 +8,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ponytail: bound catalog output at 256 extensions, 256 version bytes and 10,000 relations; raise only with reviewed report limits.
+// ponytail: bound catalog output at 256 extensions, 1,024 routines, 10,000 relations, and 8 KiB per routine signature.
 const (
-	supportedPostgresMajor = 17
-	maxObservedExtensions  = 256
-	maxExtensionVersion    = 256
-	maxObservedRelations   = 10000
-	inspectionTimeout      = 15 * time.Second
+	supportedPostgresMajor      = 17
+	maxObservedExtensions       = 256
+	maxExtensionVersion         = 256
+	maxObservedRoutines         = 1024
+	maxRoutineIdentityArguments = 8192
+	maxObservedRelations        = 10000
+	inspectionTimeout           = 15 * time.Second
 )
 
 var (
@@ -34,6 +36,16 @@ type ExtensionObservation struct {
 	Name    string
 	Version string
 	Schema  string
+}
+
+type RoutineObservation struct {
+	Schema            string
+	Name              string
+	IdentityArguments string
+	Kind              string
+	Language          string
+	SecurityDefiner   bool
+	HasConfiguration  bool
 }
 
 type RelationObservation struct {
@@ -57,6 +69,7 @@ type CatalogObservation struct {
 	Schemas          []SchemaObservation
 	Extensions       []ExtensionObservation
 	Relations        []RelationObservation
+	Routines         []RoutineObservation
 }
 
 // ObserveCatalog performs bounded, read-only observation over the validated
@@ -131,6 +144,7 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		Schemas:          make([]SchemaObservation, 0, len(schemaNames)),
 		Extensions:       make([]ExtensionObservation, 0),
 		Relations:        make([]RelationObservation, 0),
+		Routines:         make([]RoutineObservation, 0),
 	}
 	if !observation.ReadOnly {
 		return observation, ErrReadOnlyTransaction
@@ -214,6 +228,53 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		relationErr := relationRows.Err()
 		relationRows.Close()
 		if relationErr != nil || len(observation.Relations) > maxObservedRelations {
+			return observation, contextOr(ctx, ErrCatalogObservation)
+		}
+	}
+
+	if len(schemaNames) > 0 {
+		routineRows, err := tx.Query(ctx, `
+			SELECT namespace.nspname::text,
+			       routine.proname::text,
+			       CASE WHEN pg_catalog.octet_length(identity.arguments) <= $1
+			            THEN identity.arguments ELSE '' END,
+			       routine.prokind::text,
+			       language.lanname::text,
+			       routine.prosecdef,
+			       routine.proconfig IS NOT NULL,
+			       pg_catalog.octet_length(identity.arguments)
+			FROM unnest($2::text[]) WITH ORDINALITY AS requested(name, ordinal)
+			JOIN pg_catalog.pg_namespace AS namespace
+			  ON namespace.nspname::text COLLATE "C" = requested.name COLLATE "C"
+			JOIN pg_catalog.pg_proc AS routine
+			  ON routine.pronamespace = namespace.oid
+			JOIN pg_catalog.pg_language AS language
+			  ON language.oid = routine.prolang
+			CROSS JOIN LATERAL (
+			  SELECT pg_catalog.pg_get_function_identity_arguments(routine.oid) AS arguments
+			) AS identity
+			ORDER BY requested.ordinal, routine.proname::text COLLATE "C", identity.arguments COLLATE "C"
+			LIMIT $3
+		`, maxRoutineIdentityArguments, schemaNames, maxObservedRoutines+1)
+		if err != nil {
+			return observation, contextOr(ctx, ErrCatalogObservation)
+		}
+		for routineRows.Next() {
+			var routine RoutineObservation
+			var argumentBytes int
+			if err := routineRows.Scan(&routine.Schema, &routine.Name, &routine.IdentityArguments, &routine.Kind, &routine.Language, &routine.SecurityDefiner, &routine.HasConfiguration, &argumentBytes); err != nil {
+				routineRows.Close()
+				return observation, contextOr(ctx, ErrCatalogObservation)
+			}
+			if argumentBytes > maxRoutineIdentityArguments || !validIdentifier(routine.Schema) || !validIdentifier(routine.Name) || !validText(routine.IdentityArguments) || len(routine.Kind) != 1 || !validIdentifier(routine.Language) {
+				routineRows.Close()
+				return observation, ErrCatalogObservation
+			}
+			observation.Routines = append(observation.Routines, routine)
+		}
+		routineErr := routineRows.Err()
+		routineRows.Close()
+		if routineErr != nil || len(observation.Routines) > maxObservedRoutines {
 			return observation, contextOr(ctx, ErrCatalogObservation)
 		}
 	}

@@ -108,6 +108,7 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 		"CREATE TABLE \"literal schema\".\"base table\" (id bigint PRIMARY KEY);\n" +
 		"CREATE TABLE \"literalXschema\".\"base table\" (id bigint);\n" +
 		"CREATE FUNCTION \"literal schema\".\"noop trigger\"() RETURNS trigger LANGUAGE plpgsql AS $body$ BEGIN RETURN NEW; END; $body$;\n" +
+		"CREATE FUNCTION \"literal schema\".\"secure sample\"(input_id bigint) RETURNS bigint LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS $body$ SELECT input_id $body$;\n" +
 		"CREATE TRIGGER \"sample trigger\" BEFORE UPDATE ON \"literal schema\".\"base table\" FOR EACH ROW EXECUTE FUNCTION \"literal schema\".\"noop trigger\"();\n" +
 		"CREATE INDEX \"sample index\" ON \"literal schema\".\"base table\" (id);\n" +
 		"CREATE VIEW \"literal schema\".\"sample view\" AS SELECT id FROM \"literal schema\".\"base table\";\n" +

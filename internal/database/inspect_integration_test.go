@@ -97,4 +97,21 @@ func TestObserveCatalogOnDisposablePostgres(t *testing.T) {
 			t.Errorf("relation %d = %+v, want %+v", i, got, want)
 		}
 	}
+
+	wantRoutines := []RoutineObservation{
+		{Schema: "literal schema", Name: "noop trigger", Kind: "f", Language: "plpgsql"},
+		{Schema: "literal schema", Name: "secure sample", Kind: "f", Language: "sql", SecurityDefiner: true, HasConfiguration: true},
+	}
+	if len(relationObservation.Routines) != len(wantRoutines) {
+		t.Fatalf("got %d routines, want %d: %+v", len(relationObservation.Routines), len(wantRoutines), relationObservation.Routines)
+	}
+	for i, want := range wantRoutines {
+		got := relationObservation.Routines[i]
+		if got.Schema != want.Schema || got.Name != want.Name || got.Kind != want.Kind || got.Language != want.Language || got.SecurityDefiner != want.SecurityDefiner || got.HasConfiguration != want.HasConfiguration {
+			t.Errorf("routine %d = %+v, want metadata %+v", i, got, want)
+		}
+		if got.Name == "secure sample" && got.IdentityArguments == "" {
+			t.Error("secure sample identity arguments were not observed")
+		}
+	}
 }

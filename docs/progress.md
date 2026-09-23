@@ -1088,13 +1088,15 @@ and read-only transaction status. It accepts at most 256 unique literal schema
 names (63 UTF-8 bytes each), passes them as a `text[]` parameter, and returns
 exact presence results in caller order; it never interpolates names as SQL or
 patterns. It reports installed extension name/version/schema with fixed bounds
-(256 entries, 256 version bytes), plus exact `pg_class` relation facts for the
-selected schemas: name, raw `relkind`, persistence, partition status, RLS
-flags/policy count, and total/user-trigger counts (at most 10,000 rows).
-Unknown relation-kind codes remain raw observations. Policy expressions/roles
-and trigger definitions/functions are not collected; these flags/counts are not
-a security or behavior baseline. It does not traverse dependencies or capture
-owners, ACLs, columns, or data. Only PostgreSQL major 17 is accepted;
+(256 entries, 256 version bytes), plus selected-schema relation facts: name,
+raw `relkind`, persistence, partition status, RLS flags/policy count, and
+total/user-trigger counts (at most 10,000 relations). It reports up to 1,024
+routine identities (8,192 argument bytes each), kind/language, security-definer
+and configuration-presence flags, but never routine bodies. Unknown relation-kind
+codes remain raw observations. Policy expressions/roles and trigger
+behavior/definitions are not collected; these facts are not a security or
+behavior baseline. It does not traverse dependencies or capture owners, ACLs,
+columns, or data. Only PostgreSQL major 17 is accepted;
 this is not a full inventory, tenant-identity proof, or hosted-support claim.
 
 ### TDD and verification
@@ -1127,7 +1129,8 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
   includes the default `plpgsql` extension. Selected-schema relation facts cover
   tables, indexes, views, materialized views, sequences, partitions, a
   same-name decoy in an unselected schema, RLS enabled/forced plus policy
-  counts, and a synthetic user-trigger count. It also
+  counts, a synthetic user-trigger count, and SQL/PLpgSQL routine metadata
+  including a security-definer routine. It also
   rejects a wrong CA, hostname mismatch, and non-TLS connection. A custom
   resolver/dialer force the synthetic direct-route hostname to IPv4 loopback.
   It requires `SPARC_TEST_PG_BIN` naming an approved local PostgreSQL bin
