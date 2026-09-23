@@ -37,11 +37,14 @@ type ExtensionObservation struct {
 }
 
 type RelationObservation struct {
-	Schema      string
-	Name        string
-	Kind        string
-	Persistence string
-	IsPartition bool
+	Schema             string
+	Name               string
+	Kind               string
+	Persistence        string
+	IsPartition        bool
+	RowSecurityEnabled bool
+	ForceRowSecurity   bool
+	PolicyCount        int64
 }
 
 type CatalogObservation struct {
@@ -169,7 +172,12 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 			       relation.relname::text,
 			       relation.relkind::text,
 			       relation.relpersistence::text,
-			       relation.relispartition
+			       relation.relispartition,
+			       relation.relrowsecurity,
+			       relation.relforcerowsecurity,
+			       (SELECT pg_catalog.count(*)
+			        FROM pg_catalog.pg_policy AS rls_policy
+			        WHERE rls_policy.polrelid = relation.oid)
 			FROM unnest($1::text[]) WITH ORDINALITY AS requested(name, ordinal)
 			JOIN pg_catalog.pg_namespace AS namespace
 			  ON namespace.nspname::text COLLATE "C" = requested.name COLLATE "C"
@@ -183,7 +191,7 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		}
 		for relationRows.Next() {
 			var relation RelationObservation
-			if err := relationRows.Scan(&relation.Schema, &relation.Name, &relation.Kind, &relation.Persistence, &relation.IsPartition); err != nil {
+			if err := relationRows.Scan(&relation.Schema, &relation.Name, &relation.Kind, &relation.Persistence, &relation.IsPartition, &relation.RowSecurityEnabled, &relation.ForceRowSecurity, &relation.PolicyCount); err != nil {
 				relationRows.Close()
 				return observation, contextOr(ctx, ErrCatalogObservation)
 			}

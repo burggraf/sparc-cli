@@ -111,8 +111,9 @@ multibyte UTF-8 names, a decoy, and a missing name. The bounded extension
 inventory reports the default `plpgsql` name, version, and schema. Selected
 schema relation facts cover tables, indexes, views, materialized views,
 sequences, parent/child partitions, and a same-name relation in an unselected
-decoy schema. This is not dependency closure, column inventory, or security
-baseline evidence.
+decoy schema. It also observes RLS enabled/forced flags and a policy count.
+Policy roles and expressions are not captured, so this is not security baseline
+evidence, dependency closure, or a column inventory.
 The durable opt-in test also rejects a wrong CA, hostname mismatch, and a
 non-TLS connection rejected by the fixture's `pg_hba.conf`. It requires an
 approved local `SPARC_TEST_PG_BIN` directory, creates/removes its own cluster
@@ -235,7 +236,7 @@ project identity. They are not production support claims.
 | Environment | v5.11.0 builder refuses all `PG*`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` variables; parser key allowlist, explicit route/TLS fields, empty passfile/servicefile/client-cert settings, and fixed runtime params are unit-tested. The local fixture also ignored poisoned home passfile/client-cert/root files. | Reproduce as durable opt-in test; qualify native-child environment separately; review process-environment mutation assumptions |
 | Route mapping | Current public docs describe direct and shared-pooler forms | Verify actual project Connect values, credential/user binding, and backend identity under separately authorized hosted test |
 | Pooler | Public docs distinguish direct/session/transaction routes and their constraints | Test qualified session routing; transaction mode remains refused |
-| Catalog/selection | v5.11.0 durable local read-only transaction observes TLS/version, exact literal schema presence/missing names including 63-byte ASCII/UTF-8 identifiers, bounded extension records, and selected-schema `pg_class` facts including partitions and an unselected same-name decoy | Expand only reviewed structural/security/dependency inventory; no general closure claim |
+| Catalog/selection | v5.11.0 durable local read-only transaction observes TLS/version, exact literal schema selectors, bounded extensions, and selected-schema `pg_class` relation, partition, RLS flag, and policy-count facts | Expand only reviewed structural/security/dependency inventory; policy semantics and general closure remain unqualified |
 | Trust policy | Explicit private CA works with local pgx v5.8.0 and v5.11.0 fixtures; v5.11.0 system-root parsing is unit-tested only; `require`/`verify-ca` are insufficient | Choose and test CA/system trust provisioning, rotation, and failure behavior on all supported platforms |
 | Version | Durable local fixture reports `server_version_num=170009`; unit gate accepts only major 17 | Add durable wrong-major integration refusal and prove gate before capture/restore |
 

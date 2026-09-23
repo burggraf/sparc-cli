@@ -112,7 +112,11 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 		"CREATE MATERIALIZED VIEW \"literal schema\".\"sample matview\" AS SELECT id FROM \"literal schema\".\"base table\";\n" +
 		"CREATE SEQUENCE \"literal schema\".\"sample sequence\";\n" +
 		"CREATE TABLE \"literal schema\".\"partitioned table\" (id bigint) PARTITION BY RANGE (id);\n" +
-		"CREATE TABLE \"literal schema\".\"partitioned child\" PARTITION OF \"literal schema\".\"partitioned table\" FOR VALUES FROM (0) TO (10);\n"
+		"CREATE TABLE \"literal schema\".\"partitioned child\" PARTITION OF \"literal schema\".\"partitioned table\" FOR VALUES FROM (0) TO (10);\n" +
+		"CREATE TABLE \"literal schema\".\"rls table\" (id bigint, owner_name text);\n" +
+		"ALTER TABLE \"literal schema\".\"rls table\" ENABLE ROW LEVEL SECURITY;\n" +
+		"ALTER TABLE \"literal schema\".\"rls table\" FORCE ROW LEVEL SECURITY;\n" +
+		"CREATE POLICY \"owner policy\" ON \"literal schema\".\"rls table\" USING (owner_name = current_user) WITH CHECK (owner_name = current_user);\n"
 	runFixtureCommandWithInput(t, []byte(sql), binDir, "psql", "-h", socketDir, "-p", strconv.Itoa(int(port)), "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1")
 
 	return &postgresFixture{

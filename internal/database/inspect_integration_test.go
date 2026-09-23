@@ -83,6 +83,7 @@ func TestObserveCatalogOnDisposablePostgres(t *testing.T) {
 		{Schema: "literal schema", Name: "base table_pkey", Kind: "i", Persistence: "p"},
 		{Schema: "literal schema", Name: "partitioned child", Kind: "r", Persistence: "p", IsPartition: true},
 		{Schema: "literal schema", Name: "partitioned table", Kind: "p", Persistence: "p"},
+		{Schema: "literal schema", Name: "rls table", Kind: "r", Persistence: "p", RowSecurityEnabled: true, ForceRowSecurity: true, PolicyCount: 1},
 		{Schema: "literal schema", Name: "sample index", Kind: "i", Persistence: "p"},
 		{Schema: "literal schema", Name: "sample matview", Kind: "m", Persistence: "p"},
 		{Schema: "literal schema", Name: "sample sequence", Kind: "S", Persistence: "p"},
