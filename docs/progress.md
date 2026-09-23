@@ -1175,6 +1175,19 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
 
 **Still open:** expand catalog/security/dependency observation and selector
 coverage; add native Windows runtime coverage and durable wrong-major refusal;
-qualify system roots on supported platforms and the selected native payload; and
+qualify positive system-root behavior and the selected native payload; and
 separately authorize any hosted route/identity test. No backup/verify/restore
 command is enabled.
+
+## R05 — Destination permissions and ordinary `public` applications
+
+**Status: open; public documentation review recorded, no baseline or preflight is
+qualified.** `docs/research/R05-permissions.md` records PostgreSQL 17 ACL,
+default-privilege, role-membership, and RLS semantics plus current Supabase API,
+role, and RLS guidance. Supabase documents a change to `public`-schema default
+grants, so a single universal project baseline is not inferred. No hosted project
+or credential was used, and the Task 10 global-default-SELECT exposure fixture
+has not yet been run. Next: reproduce the unauthorized-read counterexample on
+the approved local fixture, then implement a read-only refusal gate against an
+independently reviewed target profile. Hosted public/Auth qualification still
+waits for Task 12 and separate exact authorization.
