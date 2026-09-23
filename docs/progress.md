@@ -1041,19 +1041,122 @@ implemented.
 
 ## R03 — PostgreSQL connectivity and TLS
 
-**Status: open; offline qualification specification recorded, not a research
-closure.** `docs/research/R03-connectivity.md` collects the repository's required
-TLS, route, environment, and project-identity safeguards, plus the independent
-pgx/libpq qualification matrix. It records why TLS hostname validation alone,
-server version, database name, or a successful password cannot prove the
-expected Supabase project—especially through a pooler.
+**Status: open; documentation refreshed and local TLS mechanisms tested, but no
+Supabase support or project identity qualified.** On 2026-09-22, public
+PostgreSQL 17/libpq, pgx, and Supabase connectivity/pooler documentation was
+reviewed. Disposable loopback PostgreSQL 17.9 fixtures tested native `psql`
+17.9 and cached pgx v5.8.0; a separate fixture exercised the pinned pgx
+v5.11.0 config builder. `docs/research/R03-connectivity.md` records
+source-backed route/TLS findings, fixture configuration/results, and limits. No
+hosted project, credential, or endpoint was used. No PostgreSQL native client
+was installed or payload added; pgx v5.11.0 was fetched and pinned after
+approval.
 
-No upstream documentation was fetched, no pgx module or native client was
-selected, and no PostgreSQL installation, local TLS fixture, hosted endpoint,
-or credential was used. Current endpoint syntax, trust-store behavior, project
-binding, direct/session routing, IPv4/IPv6 support, and both drivers' TLS
-semantics remain unverified. **Task 09 remains blocked on that evidence**; the
-research record is not permission to connect or install tools. Next gates are
-owner-approved rechecking of the listed official docs and separate approval for
-any PostgreSQL client installation or disposable local fixture. Hosted tests
-remain separately authorized.
+The v5.8.0 fixture confirmed `verify-full` with a private CA and matching DNS
+identity over IPv4/IPv6, rejection of wrong CA/hostname, and the weakness of
+`verify-ca`/`require`. A separate v5.11.0 local probe verified the new builder's
+TLS success, wrong-CA and hostname rejection, and explicit password/CA use with
+poisoned files in a temporary home. Task 09 now has an offline config builder;
+broader catalog/version qualification, supported-platform trust behavior,
+native payload, Supabase routes, and project/backend identity remain open.
+Separate exact owner authorization is still required for any hosted endpoint,
+credential, or source/target identity test.
+
+## Task 09 — Explicit pgx config and bounded catalog observation
+
+**Status: in progress; candidate read-only observation only.** Added
+`internal/database/connect.go`, `connect_test.go`, `pgx_config_test.go`,
+`inspect.go`, `inspect_test.go`, `selectors.go`, and `selectors_test.go`.
+The explicit parameter contract accepts only a canonical direct host bound to
+the expected project ref, port 5432, `sslmode=verify-full`, and an explicit
+`system` or absolute, normalized CA path. It bounds database/user identifiers
+and rejects control text. Route classification distinguishes direct, shared
+session-pooler, and transaction-pooler forms; `Validate` refuses both pooler
+routes because neither has hosted project-binding qualification.
+
+The module now pins pgx v5.11.0. `NewConnConfig` builds a parsed config with an
+allowlisted DSN, explicit route/database/user/TLS settings, no DSN password, no
+TLS fallback, fixed `application_name`, and empty passfile, servicefile,
+client-cert, and key selectors. It refuses process environment variables
+beginning with `PG` plus `SSL_CERT_FILE`/`SSL_CERT_DIR`; only after config
+validation is the explicitly supplied password copied into memory. The builder is not wired into the CLI and is not project-identity proof.
+
+`ObserveCatalog` bounds connection/transaction work to 15 seconds, begins an
+explicit read-only transaction, sets `search_path=pg_catalog` and statement,
+lock, and idle-transaction timeouts, then observes the PostgreSQL version, TLS,
+and read-only transaction status. It accepts at most 256 unique literal schema
+names (63 UTF-8 bytes each), passes them as a `text[]` parameter, and returns
+exact presence results in caller order; it never interpolates names as SQL or
+patterns. Only PostgreSQL major 17 is accepted. This small observation is not a
+schema/dependency inventory, tenant identity proof, or hosted-support claim.
+
+### TDD and verification
+
+- **Red:** New `NewConnConfig` tests first failed to compile because the builder
+  and ambient-configuration error were undefined. A route-propagation regression
+  then failed because an unsupported pooler was collapsed into a generic
+  parameter error; the builder now preserves the fixed refusal.
+- **Green:** Focused tests cover URI escaping, TLS server-name/root config,
+  absent fallbacks, fixed runtime params, password exclusion from the parsed
+  DSN, invalid credentials, and rejection of `PGOPTIONS`, service selectors,
+  route/password/TLS environment, and system-root overrides.
+- A disposable PostgreSQL 17.9 loopback fixture exercised pgx v5.11.0 through
+  `NewConnConfig`: TLS and major 17 were observed; wrong CA and hostname were
+  rejected. A custom resolver/dialer forced the synthetic direct hostname to
+  IPv4 loopback only. A temporary home contained a wrong `.pgpass` and invalid
+  default client TLS files, which did not interfere with the explicit config.
+  This probe was removed and is not a durable integration test.
+- `go mod tidy` pinned pgx v5.11.0 and required checksums after network-fetch
+  approval; no Supabase endpoint or credential was used.
+- **Red:** Schema-selector and version-gate tests first failed to compile with
+  undefined selector validation, bounds, and PostgreSQL-version gate symbols.
+  The implementation then passed exact literal-name validation cases and the
+  PG17-only major gate.
+- **Local PostgreSQL:** The opt-in disposable PostgreSQL 17.9 loopback fixture
+  exercises `observeCatalog`: TLS and read-only transaction are true, version is
+  170009, and exact schema presence/missing results cover spaces, quotes,
+  backslashes, regex punctuation, Unicode, a decoy, and a missing name. It also
+  rejects a wrong CA, hostname mismatch, and non-TLS connection. A custom
+  resolver/dialer force the synthetic direct-route hostname to IPv4 loopback.
+  It requires `SPARC_TEST_PG_BIN` naming an approved local PostgreSQL bin
+  directory; it creates/removes its cluster and private certificates. It is
+  currently excluded from Windows runtime because bootstrap uses a Unix socket.
+- **Red:** The initial focused package test failed to compile with undefined
+  `ConnectionParams`/`RouteKind` and route constants, as expected before the
+  implementation.
+- **Red/green (CA path controls):** After adding tests for ESC and Unicode
+  control characters in CA paths, the focused test failed because `Validate`
+  accepted them. Reusing a single strict UTF-8/control-text check fixed the
+  boundary; the focused package suite then passed.
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOWORK=off GOENV=off GOFLAGS= GOTELEMETRY=off go test -mod=readonly ./... -count=1 -timeout=240s` — passed.
+- The same guarded environment with `go vet -mod=readonly ./...` and
+  `go build -mod=readonly -o /tmp/sparc-task09-route ./cmd/sparc` — passed;
+  temporary binary removed.
+- `internal/database` tests cross-compiled for Windows AMD64 and Darwin arm64;
+  compile evidence only, binaries removed without execution.
+- `gofmt -d internal/database/connect.go internal/database/connect_test.go` and
+  `git diff --check` — clean for the initial route slice.
+- After pinning pgx v5.11.0: `go mod verify`, focused database tests, full
+  `go test -mod=readonly ./... -count=1 -timeout=240s`, `go vet -mod=readonly ./...`,
+  CLI build, Windows AMD64 and Darwin arm64 database test cross-compiles, `gofmt`,
+  and `git diff --check` all passed.
+- The default-parallel full race run hit its 5-minute package timeout in the
+  archive scrypt test under concurrent load. The serial full rerun
+  `go test -mod=readonly -race -p=1 ./... -count=1 -timeout=600s` passed.
+- `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin GOTOOLCHAIN=local
+  GOPROXY=off GOSUMDB=off GOWORK=off GOENV=off GOFLAGS= GOTELEMETRY=off
+  go test -mod=readonly -tags=integration ./internal/database -run '^TestObserveCatalog' -count=1 -v`
+  — passed on local macOS. Omitting `SPARC_TEST_PG_BIN` skips the fixture; the
+  integration-tagged database package cross-compiled for Windows AMD64 but was
+  not executed.
+- After adding inspection/selectors: `go mod verify`, full
+  `go test -mod=readonly ./... -count=1 -timeout=240s`,
+  `go test -mod=readonly -race ./internal/database -count=1 -timeout=120s`,
+  `go vet -mod=readonly ./...`, CLI build, Windows AMD64/Darwin arm64 database
+  test cross-compiles, `gofmt -d`, and `git diff --check` passed.
+
+**Still open:** expand catalog/security/dependency observation and selector
+coverage; add native Windows runtime coverage and durable wrong-major refusal;
+qualify system roots on supported platforms and the selected native payload; and
+separately authorize any hosted route/identity test. No backup/verify/restore
+command is enabled.
