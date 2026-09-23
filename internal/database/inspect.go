@@ -8,7 +8,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ponytail: bound catalog output at 256 extensions, 1,024 routines, 10,000 relations, and 8 KiB per routine signature.
+// ponytail: cap ACL facts at 65,536 rows; raise only after measuring
+// worst-case memory. Other catalog caps: 256 extensions, 1,024 routines,
+// 10,000 relations, and 8 KiB per routine signature.
 const (
 	supportedPostgresMajor      = 17
 	maxObservedExtensions       = 256
@@ -16,6 +18,7 @@ const (
 	maxObservedRoutines         = 1024
 	maxRoutineIdentityArguments = 8192
 	maxObservedRelations        = 10000
+	maxObservedACLRows          = 65536
 	inspectionTimeout           = 15 * time.Second
 )
 
@@ -62,6 +65,24 @@ type RelationObservation struct {
 	UserTriggerCount   int64
 }
 
+// ACLObservation records a relation ACL when Column is empty, otherwise a
+// column ACL. ACLIsNull distinguishes the catalog's NULL default from an
+// explicit ACL array, including an explicit array with no grants.
+type ACLObservation struct {
+	Schema    string
+	Relation  string
+	Column    string
+	ACLIsNull bool
+	Grants    []ACLGrantObservation
+}
+
+type ACLGrantObservation struct {
+	Grantee   string
+	Grantor   string
+	Privilege string
+	Grantable bool
+}
+
 type CatalogObservation struct {
 	ServerVersionNum int
 	ServerMajor      int
@@ -71,6 +92,7 @@ type CatalogObservation struct {
 	Extensions       []ExtensionObservation
 	Relations        []RelationObservation
 	Routines         []RoutineObservation
+	ACLs             []ACLObservation
 	Security         SecurityObservation
 }
 
@@ -147,6 +169,7 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		Extensions:       make([]ExtensionObservation, 0),
 		Relations:        make([]RelationObservation, 0),
 		Routines:         make([]RoutineObservation, 0),
+		ACLs:             make([]ACLObservation, 0),
 	}
 	if !observation.ReadOnly {
 		return observation, ErrReadOnlyTransaction
@@ -281,6 +304,12 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 			return observation, contextOr(ctx, ErrCatalogObservation)
 		}
 	}
+
+	acls, err := observeACLs(ctx, tx, schemaNames)
+	if err != nil {
+		return observation, contextOr(ctx, ErrCatalogObservation)
+	}
+	observation.ACLs = acls
 
 	security, err := observeSecurity(ctx, tx, schemaNames)
 	if err != nil {

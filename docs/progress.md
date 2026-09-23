@@ -1090,13 +1090,16 @@ exact presence results in caller order; it never interpolates names as SQL or
 patterns. It reports installed extension name/version/schema with fixed bounds
 (256 entries, 256 version bytes), plus selected-schema relation facts: name,
 owner role name, raw `relkind`, persistence, partition status, RLS flags/policy
-count, and total/user-trigger counts (at most 10,000 relations). It reports
-up to 1,024 routine identities (8,192 argument bytes each), kind/language,
-security-definer and configuration-presence flags, but never routine bodies.
-Unknown relation-kind codes remain raw observations. Policy expressions/roles and trigger
+count, and total/user-trigger counts (at most 10,000 relations). It also records
+relation/column ACL nullness and bounded grantor, grantee, privilege, and
+grantability facts (65,536 ACL rows maximum). It reports up to 1,024 routine
+identities (8,192 argument bytes each), kind/language, security-definer and
+configuration-presence flags, but never routine bodies. Unknown relation-kind
+codes remain raw observations. Policy expressions/roles and trigger
 behavior/definitions are not collected; these facts are not a security or
 behavior baseline. It does not traverse dependencies or capture schema/database
-owners, ACL entries, columns, or data. Only PostgreSQL major 17 is accepted;
+owners, default ACLs, role memberships, column definitions, or data. Only
+PostgreSQL major 17 is accepted;
 this is not a full inventory, tenant-identity proof, or hosted-support claim.
 
 ### TDD and verification
@@ -1142,6 +1145,13 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
 - **Red:** The initial focused package test failed to compile with undefined
   `ConnectionParams`/`RouteKind` and route constants, as expected before the
   implementation.
+- **Red/green (ACL facts):** A local integration test first failed to compile
+  because `CatalogObservation.ACLs` and the ACL observation types did not exist.
+  Bounded read-only facts now preserve NULL versus explicit-empty relation ACLs,
+  column ACLs, named grantee/grantor, privilege, and grant option; the PG17.9
+  fixture covers each case. The focused ACL/owner/direct-grant/catalog suite
+  passed with `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run 'TestObserveCatalogReportsRelationAndColumnACLs|TestObserveCatalogReportsSelectedRelationOwner|TestObserveCatalogRejectsDirectPublicRelationSelect|TestObserveCatalogOnDisposablePostgres' -count=1 -v`.
+  These facts are not an expected permission profile.
 - **Red/green (relation owner):** A local integration test first failed to
   compile because `RelationObservation.Owner` did not exist. The observation now
   reports selected relation owner role names (not local OIDs); a synthetic
@@ -1179,10 +1189,10 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
   `go test -mod=readonly -race ./internal/database -count=1 -timeout=120s`,
   `go vet -mod=readonly ./...`, CLI build, Windows AMD64/Darwin arm64 database
   test cross-compiles, `gofmt -d`, and `git diff --check` passed.
-- **2026-09-23 relation-owner update:** default and localdemo-tagged full suites,
-  default/tagged vet, the full PostgreSQL integration suite, integration-tagged
-  vet, Windows AMD64 and Darwin arm64 integration-test cross-compiles, gofmt,
-  and `git diff --check` passed on macOS arm64.
+- **2026-09-23 owner/ACL update:** default and localdemo-tagged full suites,
+  default/tagged vet, full PostgreSQL integration and race suites,
+  integration-tagged vet, Windows AMD64 and Darwin arm64 integration-test
+  cross-compiles, gofmt, and `git diff --check` passed on macOS arm64.
 
 **Still open:** expand catalog/security/dependency observation and selector
 coverage; add native Windows runtime coverage and durable wrong-major refusal;
@@ -1202,8 +1212,10 @@ This is one narrow guard—not a full security baseline, not wired to restore, a
 not hosted qualification. On 2026-09-23 a separate PG17.9 loopback integration
 test directly grants `SELECT` on one public table to `PUBLIC`, confirms the
 catalog reports only the relation-level case, verifies the guard refuses, and
-shows an unrelated login role can read the synthetic canary. The focused
-command
+shows an unrelated login role can read the synthetic canary. A separate
+catalog test distinguishes NULL from explicit-empty relation ACLs and records
+named grantee/grantor, privilege, grant option, and column ACLs. These are facts
+only, not an expected permission profile. The focused direct-grant command
 `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run '^TestObserveCatalogRejectsDirectPublicRelationSelect$' -count=1 -v`
 and full tagged database suite passed on macOS. Full
 `go test -mod=readonly ./... -count=1 -timeout=240s` and
@@ -1241,10 +1253,14 @@ archives. A passing verify is not a recovery or project-coverage claim.
 compilation because `internal/localdemo` did not yet exist. The first runtime
 attempt failed because pgx rejected the `hostaddr` connection option; fixture
 state checks now use the explicitly selected `psql` client under the sanitized
-environment. The final tagged
-integration rehearsal and `go run -tags=localdemo ./cmd/sparc-localdemo` both
-completed the source-delete/fresh-target restore. A compiled `sparc verify`
-reported integrity passed, incomplete capture, one component, exit 3.
+environment. A race-enabled rehearsal exposed `exec.Cmd.WaitDelay` expiring
+while its stdout-copy goroutine waited for age's slower scrypt consumer. The dump
+now uses `StdoutPipe` with explicit start/read/wait ordering; the full
+race-tagged PostgreSQL integration suite passes. The tagged integration
+rehearsal and
+`go run -tags=localdemo ./cmd/sparc-localdemo` complete source deletion and fresh
+target restore. A compiled `sparc verify` reports integrity passed, incomplete
+capture, one component, exit 3.
 
 Fresh verification: full default and localdemo-tagged test suites, CLI and
 localdemo race suites, default/tagged `go vet`, normal `sparc` and tagged demo

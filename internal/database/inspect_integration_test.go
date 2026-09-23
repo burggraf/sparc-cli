@@ -153,6 +153,89 @@ func TestObserveCatalogReportsSelectedRelationOwner(t *testing.T) {
 	t.Fatal("owned relation missing from catalog observation")
 }
 
+func TestObserveCatalogReportsRelationAndColumnACLs(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal("unable to connect to local fixture as administrator")
+	}
+	defer admin.Close(ctx)
+	for _, statement := range []string{
+		"CREATE ROLE sparc_acl_owner NOLOGIN",
+		"CREATE ROLE sparc_acl_reader NOLOGIN",
+		"CREATE TABLE public.sparc_acl_null_canary (value text NOT NULL)",
+		"CREATE TABLE public.sparc_acl_empty_canary (value text NOT NULL)",
+		"GRANT SELECT ON TABLE public.sparc_acl_empty_canary TO PUBLIC",
+		"REVOKE ALL PRIVILEGES ON TABLE public.sparc_acl_empty_canary FROM PUBLIC",
+		"REVOKE ALL PRIVILEGES ON TABLE public.sparc_acl_empty_canary FROM postgres",
+		"CREATE TABLE public.sparc_acl_granted_canary (id bigint, value text NOT NULL)",
+		"ALTER TABLE public.sparc_acl_granted_canary OWNER TO sparc_acl_owner",
+		"SET ROLE sparc_acl_owner",
+		"GRANT SELECT ON TABLE public.sparc_acl_granted_canary TO sparc_acl_reader WITH GRANT OPTION",
+		"GRANT SELECT (value) ON TABLE public.sparc_acl_granted_canary TO PUBLIC",
+		"RESET ROLE",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to seed ACL fixture")
+		}
+	}
+
+	observation, err := observeCatalog(ctx, fixture.config(t, fixture.caPath), []string{"public"})
+	if err != nil {
+		t.Fatal("unable to observe ACL fixture")
+	}
+	findACL := func(schema, relation, column string) (ACLObservation, bool) {
+		for _, acl := range observation.ACLs {
+			if acl.Schema == schema && acl.Relation == relation && acl.Column == column {
+				return acl, true
+			}
+		}
+		return ACLObservation{}, false
+	}
+
+	nullACL, found := findACL("public", "sparc_acl_null_canary", "")
+	if !found || !nullACL.ACLIsNull || len(nullACL.Grants) != 0 {
+		t.Fatalf("NULL relation ACL observation = %+v, found=%t", nullACL, found)
+	}
+	nullColumnACL, found := findACL("public", "sparc_acl_null_canary", "value")
+	if !found || !nullColumnACL.ACLIsNull || len(nullColumnACL.Grants) != 0 {
+		t.Fatalf("NULL column ACL observation = %+v, found=%t", nullColumnACL, found)
+	}
+	emptyACL, found := findACL("public", "sparc_acl_empty_canary", "")
+	if !found || emptyACL.ACLIsNull || len(emptyACL.Grants) != 0 {
+		t.Fatalf("explicit-empty relation ACL observation = %+v, found=%t", emptyACL, found)
+	}
+
+	relationACL, found := findACL("public", "sparc_acl_granted_canary", "")
+	if !found || relationACL.ACLIsNull {
+		t.Fatalf("explicit relation ACL observation = %+v, found=%t", relationACL, found)
+	}
+	foundNamedGrant := false
+	for _, grant := range relationACL.Grants {
+		if grant.Grantee == "sparc_acl_reader" && grant.Grantor == "sparc_acl_owner" && grant.Privilege == "SELECT" && grant.Grantable {
+			foundNamedGrant = true
+		}
+	}
+	if !foundNamedGrant {
+		t.Fatalf("named relation grant identity/options missing: %+v", relationACL.Grants)
+	}
+
+	columnACL, found := findACL("public", "sparc_acl_granted_canary", "value")
+	if !found || columnACL.ACLIsNull {
+		t.Fatalf("explicit column ACL observation = %+v, found=%t", columnACL, found)
+	}
+	foundPublicGrant := false
+	for _, grant := range columnACL.Grants {
+		if grant.Grantee == "PUBLIC" && grant.Grantor == "sparc_acl_owner" && grant.Privilege == "SELECT" && !grant.Grantable {
+			foundPublicGrant = true
+		}
+	}
+	if !foundPublicGrant {
+		t.Fatalf("column-level PUBLIC grant identity missing: %+v", columnACL.Grants)
+	}
+}
+
 func TestObserveCatalogRejectsWrongTrust(t *testing.T) {
 	fixture := newPostgresFixture(t)
 	if _, err := observeCatalog(context.Background(), fixture.config(t, fixture.wrongCAPath), nil); err != ErrDatabaseConnect {
