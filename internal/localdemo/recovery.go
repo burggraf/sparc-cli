@@ -316,27 +316,23 @@ func runCommand(ctx context.Context, env []string, executable string, stdin io.R
 }
 
 func dumpToArchive(ctx context.Context, env []string, pgdump, port, archivePath string, passphrase []byte) (archive.Manifest, error) {
-	reader, writer := io.Pipe()
 	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, pgdump, "--format=custom", "--schema=demo", "--no-password", "--dbname", connectionInfo(port, "sparc_demo_source"))
 	cmd.Env = env
-	cmd.Stdout = writer
 	cmd.Stderr = io.Discard
 	cmd.WaitDelay = 2 * time.Second
-	commandDone := make(chan error, 1)
-	go func() {
-		err := cmd.Run()
-		if err != nil {
-			_ = writer.CloseWithError(err)
-		} else {
-			_ = writer.Close()
-		}
-		commandDone <- err
-	}()
-	manifest, archiveErr := destination.Create(archivePath, []archive.Input{{Key: "database/demo.dump", Scope: "developer-only local PG17 demo schema", Status: "incomplete", Source: reader}}, string(passphrase))
-	_ = reader.Close()
-	commandErr := <-commandDone
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return archive.Manifest{}, ErrDump
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		return archive.Manifest{}, ErrDump
+	}
+	manifest, archiveErr := destination.Create(archivePath, []archive.Input{{Key: "database/demo.dump", Scope: "developer-only local PG17 demo schema", Status: "incomplete", Source: stdout}}, string(passphrase))
+	_ = stdout.Close()
+	commandErr := cmd.Wait()
 	if archiveErr != nil || commandErr != nil {
 		return archive.Manifest{}, ErrDump
 	}
