@@ -148,6 +148,202 @@ func observeACLs(ctx context.Context, tx pgx.Tx, schemaNames []string) ([]ACLObs
 	return observations, nil
 }
 
+func observeDefaultACLs(ctx context.Context, tx pgx.Tx, schemaNames []string) ([]DefaultACLObservation, error) {
+	observations := make([]DefaultACLObservation, 0)
+	rows, err := tx.Query(ctx, `
+		SELECT access.creator,
+		       access.schema_name,
+		       access.object_type,
+		       access.acl_is_null,
+		       CASE
+		         WHEN access.grantee IS NULL THEN ''::text
+		         WHEN access.grantee = 0 THEN 'PUBLIC'
+		         ELSE pg_catalog.pg_get_userbyid(access.grantee)::text
+		       END,
+		       COALESCE(pg_catalog.pg_get_userbyid(access.grantor)::text, ''),
+		       COALESCE(access.privilege_type::text, ''),
+		       COALESCE(access.is_grantable, false)
+		FROM (
+		  SELECT COALESCE(pg_catalog.pg_get_userbyid(defaults.defaclrole)::text, '') AS creator,
+		         COALESCE(namespace.nspname::text, '') AS schema_name,
+		         defaults.defaclobjtype::text AS object_type,
+		         defaults.defaclacl IS NULL AS acl_is_null,
+		         exploded.grantee,
+		         exploded.grantor,
+		         exploded.privilege_type,
+		         exploded.is_grantable
+		  FROM pg_catalog.pg_default_acl AS defaults
+		  LEFT JOIN pg_catalog.pg_namespace AS namespace
+		    ON namespace.oid = defaults.defaclnamespace
+		  LEFT JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS exploded ON true
+		  WHERE defaults.defaclnamespace = 0
+		     OR EXISTS (
+		       SELECT 1
+		       FROM unnest($1::text[]) AS requested(name)
+		       WHERE namespace.nspname::text COLLATE "C" = requested.name COLLATE "C"
+		     )
+		  LIMIT $2
+		) AS access
+		ORDER BY access.creator COLLATE "C",
+		         access.schema_name COLLATE "C",
+		         access.object_type COLLATE "C",
+		         access.grantor,
+		         access.grantee,
+		         access.privilege_type COLLATE "C",
+		         access.is_grantable
+	`, schemaNames, maxObservedACLRows+1)
+	if err != nil {
+		return nil, err
+	}
+	rowCount := 0
+	for rows.Next() {
+		rowCount++
+		if rowCount > maxObservedACLRows {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		var creator, schema, objectType, grantee, grantor, privilege string
+		var aclIsNull, grantable bool
+		if err := rows.Scan(&creator, &schema, &objectType, &aclIsNull, &grantee, &grantor, &privilege, &grantable); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !validIdentifier(creator) || schema != "" && !validIdentifier(schema) || len(objectType) != 1 || !validText(objectType) {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		newACL := len(observations) == 0 || observations[len(observations)-1].Creator != creator || observations[len(observations)-1].Schema != schema || observations[len(observations)-1].ObjectType != objectType
+		if newACL {
+			observations = append(observations, DefaultACLObservation{Creator: creator, Schema: schema, ObjectType: objectType, ACLIsNull: aclIsNull})
+		} else if observations[len(observations)-1].ACLIsNull != aclIsNull {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		if grantee == "" && grantor == "" && privilege == "" {
+			if grantable {
+				rows.Close()
+				return nil, ErrCatalogObservation
+			}
+			continue
+		}
+		if !validIdentifier(grantee) || !validIdentifier(grantor) || !validIdentifier(privilege) {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		observations[len(observations)-1].Grants = append(observations[len(observations)-1].Grants, ACLGrantObservation{
+			Grantee: grantee, Grantor: grantor, Privilege: privilege, Grantable: grantable,
+		})
+	}
+	rowErr := rows.Err()
+	rows.Close()
+	if rowErr != nil {
+		return nil, rowErr
+	}
+	return observations, nil
+}
+
+func observeRoles(ctx context.Context, tx pgx.Tx) ([]RoleObservation, error) {
+	observations := make([]RoleObservation, 0)
+	rows, err := tx.Query(ctx, `
+		SELECT roles.name,
+		       roles.superuser,
+		       roles.inherit,
+		       roles.create_role,
+		       roles.create_database,
+		       roles.can_login,
+		       roles.replication,
+		       roles.bypass_rls
+		FROM (
+		  SELECT role.rolname::text AS name,
+		         role.rolsuper AS superuser,
+		         role.rolinherit AS inherit,
+		         role.rolcreaterole AS create_role,
+		         role.rolcreatedb AS create_database,
+		         role.rolcanlogin AS can_login,
+		         role.rolreplication AS replication,
+		         role.rolbypassrls AS bypass_rls
+		  FROM pg_catalog.pg_roles AS role
+		  LIMIT $1
+		) AS roles
+		ORDER BY roles.name COLLATE "C"
+	`, maxObservedRoles+1)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		if len(observations) == maxObservedRoles {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		var role RoleObservation
+		if err := rows.Scan(&role.Name, &role.Superuser, &role.Inherit, &role.CreateRole, &role.CreateDatabase, &role.CanLogin, &role.Replication, &role.BypassRLS); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !validIdentifier(role.Name) {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		observations = append(observations, role)
+	}
+	rowErr := rows.Err()
+	rows.Close()
+	if rowErr != nil {
+		return nil, rowErr
+	}
+	return observations, nil
+}
+
+func observeMemberships(ctx context.Context, tx pgx.Tx) ([]MembershipObservation, error) {
+	observations := make([]MembershipObservation, 0)
+	rows, err := tx.Query(ctx, `
+		SELECT memberships.role_name,
+		       memberships.member_name,
+		       memberships.grantor_name,
+		       memberships.admin_option,
+		       memberships.inherit_option,
+		       memberships.set_option
+		FROM (
+		  SELECT COALESCE(pg_catalog.pg_get_userbyid(membership.roleid)::text, '') AS role_name,
+		         COALESCE(pg_catalog.pg_get_userbyid(membership.member)::text, '') AS member_name,
+		         COALESCE(pg_catalog.pg_get_userbyid(membership.grantor)::text, '') AS grantor_name,
+		         membership.admin_option,
+		         membership.inherit_option,
+		         membership.set_option
+		  FROM pg_catalog.pg_auth_members AS membership
+		  LIMIT $1
+		) AS memberships
+		ORDER BY memberships.role_name COLLATE "C",
+		         memberships.member_name COLLATE "C",
+		         memberships.grantor_name COLLATE "C"
+	`, maxObservedMemberships+1)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		if len(observations) == maxObservedMemberships {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		var membership MembershipObservation
+		if err := rows.Scan(&membership.Role, &membership.Member, &membership.Grantor, &membership.AdminOption, &membership.InheritOption, &membership.SetOption); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !validIdentifier(membership.Role) || !validIdentifier(membership.Member) || !validIdentifier(membership.Grantor) {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		observations = append(observations, membership)
+	}
+	rowErr := rows.Err()
+	rows.Close()
+	if rowErr != nil {
+		return nil, rowErr
+	}
+	return observations, nil
+}
+
 func observeSecurity(ctx context.Context, tx pgx.Tx, schemaNames []string) (SecurityObservation, error) {
 	var observation SecurityObservation
 	err := tx.QueryRow(ctx, `

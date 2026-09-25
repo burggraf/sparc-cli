@@ -1092,15 +1092,19 @@ patterns. It reports installed extension name/version/schema with fixed bounds
 owner role name, raw `relkind`, persistence, partition status, RLS flags/policy
 count, and total/user-trigger counts (at most 10,000 relations). It also records
 relation/column ACL nullness and bounded grantor, grantee, privilege, and
-grantability facts (65,536 ACL rows maximum). It reports up to 1,024 routine
+grantability facts (65,536 rows maximum). It reports up to 1,024 routine
 identities (8,192 argument bytes each), kind/language, security-definer and
-configuration-presence flags, but never routine bodies. Unknown relation-kind
-codes remain raw observations. Policy expressions/roles and trigger
-behavior/definitions are not collected; these facts are not a security or
-behavior baseline. It does not traverse dependencies or capture schema/database
-owners, default ACLs, role memberships, column definitions, or data. Only
-PostgreSQL major 17 is accepted;
-this is not a full inventory, tenant-identity proof, or hosted-support claim.
+configuration-presence flags, but never routine bodies. It observes explicit
+`pg_default_acl` entries for global and selected-schema scopes (65,536 expanded
+rows maximum), plus cluster-wide role attributes (4,096 roles) and membership
+identities/grantor/admin/inherit/set options (65,536 edges). Role identities are
+names, not local OIDs; no password hashes or role configuration are queried.
+Unknown relation-kind codes remain raw observations. RLS policy roles/effects
+and trigger behavior/definitions are not collected; these facts are not a
+security or behavior baseline. It does not materialize implicit built-in
+default privileges, traverse dependencies, capture database/schema owners,
+column definitions, or data. Only PostgreSQL major 17 is accepted; this is not a
+full inventory, tenant-identity proof, or hosted-support claim.
 
 ### TDD and verification
 
@@ -1152,6 +1156,14 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
   fixture covers each case. The focused ACL/owner/direct-grant/catalog suite
   passed with `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run 'TestObserveCatalogReportsRelationAndColumnACLs|TestObserveCatalogReportsSelectedRelationOwner|TestObserveCatalogRejectsDirectPublicRelationSelect|TestObserveCatalogOnDisposablePostgres' -count=1 -v`.
   These facts are not an expected permission profile.
+- **Red/green (default ACLs and role graph):** Focused local PG17.9 tests first
+  failed to compile because the observation fields/types were absent. The
+  read-only query now records global and selected-schema explicit default ACL
+  rows without leaking local OIDs, plus bounded role attributes and PG17
+  membership grantor/admin/inherit/set options. Tests prove unselected-schema
+  defaults are omitted and PostgreSQL's creator ACL entries are preserved
+  alongside an explicit `PUBLIC SELECT`. Password hashes and role settings are
+  not queried; these observations are not an expected profile.
 - **Red/green (relation owner):** A local integration test first failed to
   compile because `RelationObservation.Owner` did not exist. The observation now
   reports selected relation owner role names (not local OIDs); a synthetic
@@ -1189,8 +1201,8 @@ this is not a full inventory, tenant-identity proof, or hosted-support claim.
   `go test -mod=readonly -race ./internal/database -count=1 -timeout=120s`,
   `go vet -mod=readonly ./...`, CLI build, Windows AMD64/Darwin arm64 database
   test cross-compiles, `gofmt -d`, and `git diff --check` passed.
-- **2026-09-23 owner/ACL update:** default and localdemo-tagged full suites,
-  default/tagged vet, full PostgreSQL integration and race suites,
+- **2026-09-23 catalog-permissions update:** default and localdemo-tagged full
+  suites, default/tagged vet, full PostgreSQL integration and race suites,
   integration-tagged vet, Windows AMD64 and Darwin arm64 integration-test
   cross-compiles, gofmt, and `git diff --check` passed on macOS arm64.
 
@@ -1214,15 +1226,18 @@ test directly grants `SELECT` on one public table to `PUBLIC`, confirms the
 catalog reports only the relation-level case, verifies the guard refuses, and
 shows an unrelated login role can read the synthetic canary. A separate
 catalog test distinguishes NULL from explicit-empty relation ACLs and records
-named grantee/grantor, privilege, grant option, and column ACLs. These are facts
-only, not an expected permission profile. The focused direct-grant command
+named grantee/grantor, privilege, grant option, and column ACLs. Additional tests
+observe global/selected-schema defaults and PG17 role/membership attributes by
+name. These are facts only, not an expected permission profile. The focused
+direct-grant command
 `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run '^TestObserveCatalogRejectsDirectPublicRelationSelect$' -count=1 -v`
-and full tagged database suite passed on macOS. Full
+and full tagged database and race suites passed on macOS. Full
 `go test -mod=readonly ./... -count=1 -timeout=240s` and
 `go vet -mod=readonly ./...` also passed. There is still no product restore
 path on which to prove preflight before mutation; no mock mutation wrapper was
-added. Named Supabase roles, ownership, memberships, RLS behavior, drift and
-full Tasks 10–11 remain open.
+added. Named-role policy evaluation, ownership expectations, RLS behavior,
+drift and full Tasks 10–11 remain open. Role/default observations are evidence
+only, not an expected profile or restore gate.
 No hosted project or credential was used; hosted public/Auth qualification
 waits for Task 12 and separate exact authorization.
 

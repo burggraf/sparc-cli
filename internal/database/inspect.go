@@ -8,9 +8,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ponytail: cap ACL facts at 65,536 rows; raise only after measuring
-// worst-case memory. Other catalog caps: 256 extensions, 1,024 routines,
-// 10,000 relations, and 8 KiB per routine signature.
+// ponytail: cap ACL/membership facts at 65,536 rows and roles at 4,096;
+// raise only after measuring worst-case memory. Other caps: 256 extensions,
+// 1,024 routines, 10,000 relations, and 8 KiB per routine signature.
 const (
 	supportedPostgresMajor      = 17
 	maxObservedExtensions       = 256
@@ -19,6 +19,8 @@ const (
 	maxRoutineIdentityArguments = 8192
 	maxObservedRelations        = 10000
 	maxObservedACLRows          = 65536
+	maxObservedRoles            = 4096
+	maxObservedMemberships      = 65536
 	inspectionTimeout           = 15 * time.Second
 )
 
@@ -83,6 +85,38 @@ type ACLGrantObservation struct {
 	Grantable bool
 }
 
+// DefaultACLObservation records global defaults with an empty Schema and
+// selected-schema defaults by name. ObjectType is PostgreSQL's catalog code.
+// ACLIsNull preserves NULL versus explicit-empty ACL values.
+type DefaultACLObservation struct {
+	Creator    string
+	Schema     string
+	ObjectType string
+	ACLIsNull  bool
+	Grants     []ACLGrantObservation
+}
+
+type RoleObservation struct {
+	Name           string
+	Superuser      bool
+	Inherit        bool
+	CreateRole     bool
+	CreateDatabase bool
+	CanLogin       bool
+	Replication    bool
+	BypassRLS      bool
+}
+
+// MembershipObservation records Role's grant to Member, issued by Grantor.
+type MembershipObservation struct {
+	Role          string
+	Member        string
+	Grantor       string
+	AdminOption   bool
+	InheritOption bool
+	SetOption     bool
+}
+
 type CatalogObservation struct {
 	ServerVersionNum int
 	ServerMajor      int
@@ -93,6 +127,9 @@ type CatalogObservation struct {
 	Relations        []RelationObservation
 	Routines         []RoutineObservation
 	ACLs             []ACLObservation
+	DefaultACLs      []DefaultACLObservation
+	Roles            []RoleObservation
+	Memberships      []MembershipObservation
 	Security         SecurityObservation
 }
 
@@ -170,6 +207,9 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		Relations:        make([]RelationObservation, 0),
 		Routines:         make([]RoutineObservation, 0),
 		ACLs:             make([]ACLObservation, 0),
+		DefaultACLs:      make([]DefaultACLObservation, 0),
+		Roles:            make([]RoleObservation, 0),
+		Memberships:      make([]MembershipObservation, 0),
 	}
 	if !observation.ReadOnly {
 		return observation, ErrReadOnlyTransaction
@@ -310,6 +350,24 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		return observation, contextOr(ctx, ErrCatalogObservation)
 	}
 	observation.ACLs = acls
+
+	defaultACLs, err := observeDefaultACLs(ctx, tx, schemaNames)
+	if err != nil {
+		return observation, contextOr(ctx, ErrCatalogObservation)
+	}
+	observation.DefaultACLs = defaultACLs
+
+	roles, err := observeRoles(ctx, tx)
+	if err != nil {
+		return observation, contextOr(ctx, ErrCatalogObservation)
+	}
+	observation.Roles = roles
+
+	memberships, err := observeMemberships(ctx, tx)
+	if err != nil {
+		return observation, contextOr(ctx, ErrCatalogObservation)
+	}
+	observation.Memberships = memberships
 
 	security, err := observeSecurity(ctx, tx, schemaNames)
 	if err != nil {

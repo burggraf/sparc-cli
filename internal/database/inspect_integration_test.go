@@ -236,6 +236,114 @@ func TestObserveCatalogReportsRelationAndColumnACLs(t *testing.T) {
 	}
 }
 
+func TestObserveCatalogReportsDefaultACLs(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal("unable to connect to local fixture as administrator")
+	}
+	defer admin.Close(ctx)
+	for _, statement := range []string{
+		"CREATE ROLE sparc_default_creator NOLOGIN",
+		"CREATE ROLE sparc_default_reader NOLOGIN",
+		"CREATE SCHEMA sparc_default_schema",
+		"CREATE SCHEMA sparc_unselected_default_schema",
+		"GRANT USAGE, CREATE ON SCHEMA sparc_default_schema TO sparc_default_creator",
+		"GRANT USAGE, CREATE ON SCHEMA sparc_unselected_default_schema TO sparc_default_creator",
+		"SET ROLE sparc_default_creator",
+		"ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO PUBLIC",
+		"ALTER DEFAULT PRIVILEGES IN SCHEMA sparc_default_schema GRANT INSERT ON TABLES TO sparc_default_reader WITH GRANT OPTION",
+		"ALTER DEFAULT PRIVILEGES IN SCHEMA sparc_unselected_default_schema GRANT UPDATE ON TABLES TO PUBLIC",
+		"RESET ROLE",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to seed default-ACL fixture")
+		}
+	}
+
+	observation, err := observeCatalog(ctx, fixture.config(t, fixture.caPath), []string{"public", "sparc_default_schema"})
+	if err != nil {
+		t.Fatal("unable to observe default-ACL fixture")
+	}
+	findDefault := func(creator, schema, objectType string) (DefaultACLObservation, bool) {
+		for _, acl := range observation.DefaultACLs {
+			if acl.Creator == creator && acl.Schema == schema && acl.ObjectType == objectType {
+				return acl, true
+			}
+		}
+		return DefaultACLObservation{}, false
+	}
+	hasGrant := func(acl DefaultACLObservation, expected ACLGrantObservation) bool {
+		for _, grant := range acl.Grants {
+			if grant == expected {
+				return true
+			}
+		}
+		return false
+	}
+	global, found := findDefault("sparc_default_creator", "", "r")
+	if !found || global.ACLIsNull || !hasGrant(global, ACLGrantObservation{
+		Grantee: "PUBLIC", Grantor: "sparc_default_creator", Privilege: "SELECT",
+	}) || !hasGrant(global, ACLGrantObservation{
+		Grantee: "sparc_default_creator", Grantor: "sparc_default_creator", Privilege: "SELECT",
+	}) {
+		t.Fatalf("global table default ACL = %+v, found=%t", global, found)
+	}
+	schema, found := findDefault("sparc_default_creator", "sparc_default_schema", "r")
+	if !found || schema.ACLIsNull || !hasGrant(schema, ACLGrantObservation{
+		Grantee: "sparc_default_reader", Grantor: "sparc_default_creator", Privilege: "INSERT", Grantable: true,
+	}) {
+		t.Fatalf("schema table default ACL = %+v, found=%t", schema, found)
+	}
+	if _, found := findDefault("sparc_default_creator", "sparc_unselected_default_schema", "r"); found {
+		t.Fatal("default ACL for an unselected schema was observed")
+	}
+}
+
+func TestObserveCatalogReportsRoleAttributesAndMembershipOptions(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal("unable to connect to local fixture as administrator")
+	}
+	defer admin.Close(ctx)
+	for _, statement := range []string{
+		"CREATE ROLE sparc_attribute_role LOGIN CREATEDB CREATEROLE NOINHERIT BYPASSRLS REPLICATION",
+		"CREATE ROLE sparc_membership_parent NOLOGIN",
+		"CREATE ROLE sparc_membership_child NOLOGIN",
+		"GRANT sparc_membership_parent TO sparc_membership_child WITH ADMIN TRUE, INHERIT FALSE, SET TRUE",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to seed role-membership fixture")
+		}
+	}
+
+	observation, err := observeCatalog(ctx, fixture.config(t, fixture.caPath), []string{"public"})
+	if err != nil {
+		t.Fatal("unable to observe role-membership fixture")
+	}
+	foundRole := false
+	for _, role := range observation.Roles {
+		if role.Name == "sparc_attribute_role" {
+			foundRole = role.CanLogin && !role.Superuser && !role.Inherit && role.CreateRole && role.CreateDatabase && role.Replication && role.BypassRLS
+		}
+	}
+	if !foundRole {
+		t.Fatal("role attributes were not observed by name")
+	}
+	foundMembership := false
+	for _, membership := range observation.Memberships {
+		if membership.Role == "sparc_membership_parent" && membership.Member == "sparc_membership_child" {
+			foundMembership = membership.Grantor == "postgres" && membership.AdminOption && !membership.InheritOption && membership.SetOption
+		}
+	}
+	if !foundMembership {
+		t.Fatal("role membership identity/options were not observed by name")
+	}
+}
+
 func TestObserveCatalogRejectsWrongTrust(t *testing.T) {
 	fixture := newPostgresFixture(t)
 	if _, err := observeCatalog(context.Background(), fixture.config(t, fixture.wrongCAPath), nil); err != ErrDatabaseConnect {
