@@ -180,6 +180,11 @@ func (f *postgresFixture) configForUser(t *testing.T, caPath, user string) *pgx.
 	t.Helper()
 	params := f.params
 	params.User = user
+	return f.configForParams(t, caPath, params)
+}
+
+func (f *postgresFixture) configForParams(t *testing.T, caPath string, params ConnectionParams) *pgx.ConnConfig {
+	t.Helper()
 	params.SSLRootCert = caPath
 	config, err := NewConnConfig(params, []byte(fixturePassword))
 	if err != nil {
@@ -293,7 +298,7 @@ func writeFixtureCertificates(t *testing.T, dir, host string) (caPath, wrongCAPa
 	serverCertificate := newFixtureCertificate(t, &x509.Certificate{
 		SerialNumber: big.NewInt(3),
 		Subject:      pkix.Name{CommonName: host},
-		DNSNames:     []string{host},
+		DNSNames:     []string{host, "aws-1-us-east-2.pooler.supabase.com"},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

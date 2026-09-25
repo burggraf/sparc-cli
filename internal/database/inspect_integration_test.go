@@ -120,6 +120,31 @@ func TestObserveCatalogRejectsDirectPublicRelationSelect(t *testing.T) {
 	}
 }
 
+func TestObserveCatalogViaSessionPoolerShapeUsesTLSAndReadOnlyTransaction(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal("unable to connect to local TLS fixture")
+	}
+	defer admin.Close(ctx)
+	poolerUser := "postgres." + testProjectRef
+	if _, err := admin.Exec(ctx, `CREATE ROLE "`+poolerUser+`" LOGIN PASSWORD '`+fixturePassword+`'`); err != nil {
+		t.Fatal("unable to create synthetic pooler user")
+	}
+	params := fixture.params
+	params.Host = "aws-1-us-east-2.pooler.supabase.com"
+	params.User = poolerUser
+	config := fixture.configForParams(t, fixture.caPath, params)
+	observation, err := observeCatalog(ctx, config, []string{"public"})
+	if err != nil {
+		t.Fatalf("local PostgreSQL session-route-shaped probe failed: %v", err)
+	}
+	if !observation.TLS || !observation.ReadOnly || observation.ServerMajor != supportedPostgresMajor {
+		t.Fatalf("session-route-shaped observation = %+v", observation)
+	}
+}
+
 func TestObserveCatalogReportsSelectedRelationOwner(t *testing.T) {
 	fixture := newPostgresFixture(t)
 	ctx := context.Background()

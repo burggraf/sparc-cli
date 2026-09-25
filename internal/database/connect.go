@@ -49,8 +49,9 @@ type ConnectionParams struct {
 	SSLRootCert        string
 }
 
-// ClassifyRoute identifies documented Supabase endpoint shapes. Pooler routes
-// are classified for refusal/reporting; this package does not qualify them.
+// ClassifyRoute identifies documented Supabase endpoint shapes. For a shared
+// session pooler, ConnectionParams.Validate also binds the username to the
+// expected project ref; this does not independently attest the backend.
 func ClassifyRoute(projectRef, host string, port uint16) RouteKind {
 	if !validProjectRefLabel(projectRef) || !validDNSName(host) {
 		return RouteUnknown
@@ -75,17 +76,21 @@ func ClassifyRoute(projectRef, host string, port uint16) RouteKind {
 // establish TLS; connection execution remains a separate qualification gate.
 func (p ConnectionParams) Validate() error {
 	if !validProjectRefLabel(p.ExpectedProjectRef) || !validDNSName(p.Host) ||
-		!validIdentifier(p.Database) || !validIdentifier(p.User) ||
-		p.SSLMode != "verify-full" || !validRootCert(p.SSLRootCert) {
+		!validIdentifier(p.Database) || p.SSLMode != "verify-full" || !validRootCert(p.SSLRootCert) {
 		return ErrConnectionParameters
 	}
 	switch ClassifyRoute(p.ExpectedProjectRef, p.Host, p.Port) {
 	case RouteDirect:
-		if p.Port != directPort {
+		if p.Port != directPort || !validIdentifier(p.User) {
 			return ErrConnectionParameters
 		}
 		return nil
-	case RouteSessionPooler, RouteTransactionPooler:
+	case RouteSessionPooler:
+		if p.Port != directPort || p.User != "postgres."+p.ExpectedProjectRef {
+			return ErrConnectionParameters
+		}
+		return nil
+	case RouteTransactionPooler:
 		return ErrUnsupportedRoute
 	default:
 		return ErrConnectionParameters
@@ -198,8 +203,20 @@ func isASCIIAlphaNumeric(c byte) bool {
 
 func isPoolerHost(host string) bool {
 	const suffix = ".pooler.supabase.com"
-	label := strings.TrimSuffix(host, suffix)
-	return label != host && !strings.Contains(label, ".") && strings.HasPrefix(label, "aws-") && len(label) > len("aws-")
+	label, ok := strings.CutSuffix(host, suffix)
+	if !ok || strings.Contains(label, ".") || !strings.HasPrefix(label, "aws-") {
+		return false
+	}
+	index, region, ok := strings.Cut(strings.TrimPrefix(label, "aws-"), "-")
+	if !ok || index == "" || region == "" {
+		return false
+	}
+	for _, digit := range index {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func validIdentifier(value string) bool {

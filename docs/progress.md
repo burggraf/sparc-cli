@@ -1088,12 +1088,14 @@ credential, or source/target identity test.
 **Status: in progress; candidate read-only observation only.** Added
 `internal/database/connect.go`, `connect_test.go`, `pgx_config_test.go`,
 `inspect.go`, `inspect_test.go`, `selectors.go`, and `selectors_test.go`.
-The explicit parameter contract accepts only a canonical direct host bound to
-the expected project ref, port 5432, `sslmode=verify-full`, and an explicit
-`system` or absolute, normalized CA path. It bounds database/user identifiers
-and rejects control text. Route classification distinguishes direct, shared
-session-pooler, and transaction-pooler forms; `Validate` refuses both pooler
-routes because neither has hosted project-binding qualification.
+The explicit parameter contract accepts a canonical direct host bound to the
+expected project ref or a shared session-pooler host on port 5432 with the exact
+`postgres.<expected-ref>` username, `sslmode=verify-full`, and an explicit
+`system` or absolute, normalized CA path. Pooler hosts must match the documented
+`aws-<numeric-index>-<region>.pooler.supabase.com` shape and are never
+synthesized. Transaction pooling and custom-role pooler usernames remain
+refused. The project-qualified user follows Supavisor's documented tenant
+routing contract; it is not an independent backend attestation.
 
 The module now pins pgx v5.11.0. `NewConnConfig` builds a parsed config with an
 allowlisted DSN, explicit route/database/user/TLS settings, no DSN password, no
@@ -1102,8 +1104,9 @@ client-cert, and key selectors. It refuses process environment variables
 beginning with `PG` plus `SSL_CERT_FILE`/`SSL_CERT_DIR`; only after config
 validation is the explicitly supplied password copied into memory. The builder is not wired into the CLI and is not project-identity proof.
 
-`ObserveCatalog` bounds connection/transaction work to 15 seconds, begins an
-explicit read-only transaction, sets `search_path=pg_catalog` and statement,
+`ObserveCatalog` accepts only the validated direct route or the bounded
+Supavisor session-pooler candidate. It bounds connection/transaction work to
+15 seconds, begins an explicit read-only transaction, sets `search_path=pg_catalog` and statement,
 lock, and idle-transaction timeouts, then observes the PostgreSQL version, TLS,
 and read-only transaction status. It accepts at most 256 unique literal schema
 names (63 UTF-8 bytes each), passes them as a `text[]` parameter, and returns
@@ -1128,7 +1131,7 @@ roles. Trigger behavior/definitions are not collected; these facts are not a
 security or behavior baseline. It does not materialize implicit built-in
 default privileges, traverse dependencies, capture database/schema owners,
 column definitions, or data. Only PostgreSQL major 17 is accepted; this is not a
-full inventory, tenant-identity proof, or hosted-support claim.
+full inventory, independent tenant-identity attestation, or hosted-support claim.
 
 ### TDD and verification
 
@@ -1203,6 +1206,14 @@ full inventory, tenant-identity proof, or hosted-support claim.
   direct-grant, and existing catalog tests passed with
   `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin go test -mod=readonly -tags=integration ./internal/database -run 'TestObserveCatalogReportsSelectedRelationOwner|TestObserveCatalogRejectsDirectPublicRelationSelect|TestObserveCatalogOnDisposablePostgres' -count=1 -v`.
   This is catalog evidence only, not an expected-owner policy or restore gate.
+- **Red/green (session pooler):** Unit tests first failed because the route
+  validator rejected the documented session route. It now accepts only port
+  5432, an `aws-<index>-<region>.pooler.supabase.com` host, verified TLS, and
+  username exactly `postgres.<expected-project-ref>`; mismatched refs and
+  transaction pooling refuse. A local TLS PostgreSQL 17.9 fixture with the
+  same hostname/username shape passed the bounded read-only observer. That
+  fixture is direct loopback PostgreSQL, not Supavisor: hosted tenant routing,
+  native clients, and backup/restore remain unqualified.
 - **Red/green (CA path controls):** After adding tests for ESC and Unicode
   control characters in CA paths, the focused test failed because `Validate`
   accepted them. Reusing a single strict UTF-8/control-text check fixed the
@@ -1233,6 +1244,10 @@ full inventory, tenant-identity proof, or hosted-support claim.
   `go test -mod=readonly -race ./internal/database -count=1 -timeout=120s`,
   `go vet -mod=readonly ./...`, CLI build, Windows AMD64/Darwin arm64 database
   test cross-compiles, `gofmt -d`, and `git diff --check` passed.
+- **2026-09-25 session-pooler candidate update:** official Supavisor docs
+  confirm that its tenant `external_id` is supplied in the project-qualified
+  username. Focused route/config tests and the PG17.9 loopback TLS/read-only
+  route-shape fixture passed; no hosted endpoint or credential was used.
 - **2026-09-25 RLS/ACL identity update:** default and localdemo-tagged full
   suites, default/localdemo/integration vet, full PostgreSQL 17.9 integration
   and race suites, Windows AMD64 and Darwin arm64 integration-test

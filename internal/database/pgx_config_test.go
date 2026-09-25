@@ -40,6 +40,23 @@ func TestNewConnConfigBuildsExplicitVerifiedConfig(t *testing.T) {
 	}
 }
 
+func TestNewConnConfigPreservesVerifiedSessionPoolerRoute(t *testing.T) {
+	clearDatabaseEnvironment(t)
+	params := validConnectionParams(t)
+	params.Host = "aws-1-us-east-2.pooler.supabase.com"
+	params.User = "postgres." + testProjectRef
+	params.SSLRootCert = "system"
+	config, err := NewConnConfig(params, []byte("explicit-password"))
+	if err != nil {
+		t.Fatalf("NewConnConfig() = %v", err)
+	}
+	if config.Host != params.Host || config.Port != directPort || config.User != params.User ||
+		config.TLSConfig == nil || config.TLSConfig.ServerName != params.Host || config.TLSConfig.InsecureSkipVerify ||
+		config.TLSConfig.RootCAs == nil || len(config.Fallbacks) != 0 {
+		t.Fatalf("session-pooler route or verified TLS changed: %#v", config)
+	}
+}
+
 func TestNewConnConfigRejectsAmbientDatabaseAndTrustSettings(t *testing.T) {
 	for _, test := range []struct{ key, value string }{
 		{"PGOPTIONS", "-c search_path=pg_catalog secret-canary"},
@@ -73,10 +90,11 @@ func TestNewConnConfigRejectsUnreadableCAWithoutEcho(t *testing.T) {
 	}
 }
 
-func TestNewConnConfigPropagatesUnqualifiedRouteRefusal(t *testing.T) {
+func TestNewConnConfigRejectsTransactionPooler(t *testing.T) {
 	clearDatabaseEnvironment(t)
 	params := validConnectionParams(t)
 	params.Host = "aws-0-us-east-1.pooler.supabase.com"
+	params.Port = transactionPort
 	params.User = "postgres." + testProjectRef
 	params.SSLRootCert = "system"
 	if config, err := NewConnConfig(params, []byte("explicit-password")); config != nil || err != ErrUnsupportedRoute {

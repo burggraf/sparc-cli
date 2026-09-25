@@ -158,8 +158,10 @@ type CatalogObservation struct {
 	Security         SecurityObservation
 }
 
-// ObserveCatalog performs bounded, read-only observation over the validated
-// direct route. It does not prove project identity or authorize backup/restore.
+// ObserveCatalog performs bounded, read-only observation over a validated
+// direct route or Supavisor session route. The session username is bound to the
+// expected project ref by Validate, but no server-side identity attestation is
+// returned; this function does not authorize backup or restore.
 func ObserveCatalog(ctx context.Context, params ConnectionParams, password []byte, schemaNames []string) (CatalogObservation, error) {
 	if ctx == nil {
 		return CatalogObservation{}, ErrCatalogObservation

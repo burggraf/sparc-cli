@@ -102,6 +102,14 @@ and `DialFunc` to force loopback, preventing external resolution or connection.
 This is local mechanism evidence, not hosted support, project identity, or
 platform trust qualification.
 
+On 2026-09-25, `TestObserveCatalogViaSessionPoolerShapeUsesTLSAndReadOnlyTransaction`
+used a local PostgreSQL 17.9 server, a synthetic `postgres.<ref>` role, and a
+TLS certificate covering a Supavisor-shaped hostname. The fixture's resolver
+and dialer forced loopback while pgx verified the supplied pooler hostname;
+the bounded read-only observer reported TLS, read-only transaction, and PG17.
+The endpoint was still direct local PostgreSQL, not Supavisor. This verifies
+only local parsing/config/TLS/observer behavior, not provider tenant routing.
+
 A second disposable PostgreSQL 17.9 fixture exercises the bounded inspection
 transaction using a config from `NewConnConfig` plus a test-only loopback
 resolver/dialer. It observes `server_version_num=170009`, TLS active, and
@@ -128,9 +136,7 @@ support evidence.
 
 ### Supabase connection and pooler guidance
 
-The current Supabase [Postgres connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres)
-and [pooler guide](https://supabase.com/docs/guides/database/connecting-to-postgres#connection-pooler)
-were reviewed. The documented route characteristics are:
+The current Supabase [Postgres connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres), [tenant/user troubleshooting guide](https://supabase.com/docs/guides/troubleshooting/tenant-or-user-not-found), and [Supavisor tenant-routing overview](https://supabase.github.io/supavisor/connecting/overview/) were rechecked on 2026-09-25. The documented route characteristics are:
 
 - The direct database endpoint uses the project reference in a hostname of the
   form `db.<project-ref>.supabase.co`, normally on port 5432. Supabase documents
@@ -149,10 +155,21 @@ were reviewed. The documented route characteristics are:
   certificate verification. SPARC's stricter policy is `verify-full` with an
   explicit trust source.
 
-These are provider-documented general forms, not a verified endpoint for any
-particular project. Exact hosts, usernames, certificates, plan/network
-availability, and backend routing still require the project's own current
-Connect details and authorized qualification.
+The provider says Supavisor resolves its tenant `external_id` from the
+project-qualified username (the portion after the dot), and specifically
+requires `postgres.<project-ref>` for the default role. Connection validation
+now accepts only that exact default-role username for port-5432 session-pooler
+connections; custom roles remain unsupported. It retains the exact dashboard
+host for DNS, SNI, and `verify-full` certificate checks. This binds supplied
+route parameters to the operator's expected project ref according to the
+provider's documented routing contract; it is not an independent attestation
+of the upstream database or the pooler-to-database leg.
+
+The route is enabled only in the bounded pgx catalog observer. Supabase
+recommends direct connections for `pg_dump` and backup/restore; no native client
+or capture/restore path accepts this candidate route. Exact hosts, certificates,
+plan/network availability, provider routing, and project identity still require
+an authorized hosted test on a disposable project.
 
 ## Required SPARC connection contract
 
@@ -177,12 +194,13 @@ These are safeguards and acceptance requirements, not live support claims:
    environment and a scoped private passfile. Set client-cert behavior explicitly;
    do not load a user's implicit `.postgresql` files.
 4. Bind the expected project ref to route data. Direct-route host/ref matching
-   and the pooler's dashboard-provided host plus project-qualified user are
-   documented mapping candidates, not yet tested proof of backend identity.
-   Server version, database name, username alone, TLS hostname alone, or
-   successful password authentication cannot establish the intended project.
-   A shared-pooler route with no independently checked project binding must be
-   refused rather than guessed.
+   and the shared pooler's documented `postgres.<project-ref>` tenant-routing
+   field are checked against the separately supplied expected ref; use only the
+   exact dashboard host. Do not treat server version, database name, TLS
+   hostname, or a username that was not checked against the expected ref as
+   project identity. The provider's routing contract is trusted for this
+   read-only candidate, but hosted positive/negative identity checks remain
+   required before any backup/restore support.
 5. Direct and session-pooler routes remain candidates; transaction pooling stays
    blocked. TLS to a pooler alone makes no claim about the pooler-to-database
    leg. Candidate catalog observation must be bounded and read-only, with safe
@@ -239,8 +257,8 @@ project identity. They are not production support claims.
 | pgx TLS | v5.8.0 local `verify-full` over IPv4/IPv6; v5.11.0 durable local fixture passes explicit-CA `verify-full`, wrong-CA, hostname-mismatch, untrusted-system-root, and non-TLS refusal checks | Qualify positive system-root behavior and supported-platform trust provisioning; execute native Windows runtime coverage |
 | libpq TLS | psql 17.9 local `verify-full` positive/negative cases over IPv4/IPv6 | Test the exact selected/signed client payload and supported Windows/macOS runtime behavior |
 | Environment | v5.11.0 builder refuses all `PG*`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` variables; parser key allowlist, explicit route/TLS fields, empty passfile/servicefile/client-cert settings, and fixed runtime params are unit-tested. The durable local fixture ignores poisoned home/app-data passfile/client-cert/root files. | Qualify native-child environment separately; review process-environment mutation assumptions |
-| Route mapping | Current public docs describe direct and shared-pooler forms | Verify actual project Connect values, credential/user binding, and backend identity under separately authorized hosted test |
-| Pooler | Public docs distinguish direct/session/transaction routes and their constraints | Test qualified session routing; transaction mode remains refused |
+| Route mapping | Unit contract binds session port 5432 to exact `postgres.<expected-ref>`; pgx retains the dashboard host for TLS; official Supavisor docs identify the username suffix as tenant `external_id` | Verify actual project Connect values and credential/tenant routing on an authorized disposable project; no independent backend attestation |
+| Pooler | Public docs distinguish direct/session/transaction routes; local PG17.9 fixture exercises TLS/read-only inspection using the session-host/username shape | Verify actual Supavisor routing on an authorized disposable project; native clients, `pg_dump`, and restore remain unqualified; transaction mode remains refused |
 | Catalog/selection | v5.11.0 durable local read-only transaction observes TLS/version, exact literal schema selectors, bounded extensions/routines, and selected-schema relation, partition, RLS/policy, and trigger-count facts | Expand only reviewed structural/security/dependency inventory; policy/trigger semantics, routine bodies, and dependency closure remain unqualified |
 | Trust policy | Explicit private CA works with local pgx v5.8.0 and v5.11.0 fixtures; v5.11.0 system-root parsing is unit-tested only; `require`/`verify-ca` are insufficient | Choose and test CA/system trust provisioning, rotation, and failure behavior on all supported platforms |
 | Version | Durable local fixture reports `server_version_num=170009`; unit gate accepts only major 17 | Add durable wrong-major integration refusal and prove gate before capture/restore |
@@ -256,8 +274,7 @@ yet wired into the CLI, and no public backup/verify/restore command is enabled.
   and [environment variables](https://www.postgresql.org/docs/17/libpq-envars.html).
 - pgx: [v5 package docs](https://pkg.go.dev/github.com/jackc/pgx/v5) and
   [v5.11.0 `pgconn/config.go`](https://github.com/jackc/pgx/blob/v5.11.0/pgconn/config.go).
-- Supabase: [connecting to Postgres](https://supabase.com/docs/guides/database/connecting-to-postgres)
-  and [pooler](https://supabase.com/docs/guides/database/connecting-to-postgres#connection-pooler).
+- Supabase: [connecting to Postgres](https://supabase.com/docs/guides/database/connecting-to-postgres), [tenant/user troubleshooting](https://supabase.com/docs/guides/troubleshooting/tenant-or-user-not-found), and [Supavisor tenant routing](https://supabase.github.io/supavisor/connecting/overview/).
 - [R02](R02-client-provenance.md) remains open for the native-client source,
   license, dependency closure, exact payload, and platform trust behavior.
 

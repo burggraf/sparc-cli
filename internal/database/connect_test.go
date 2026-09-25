@@ -34,6 +34,8 @@ func TestClassifyRoute(t *testing.T) {
 		{"pooler wrong domain", testProjectRef, "aws-0-us-east-1.pooler.attacker.test", 5432, RouteUnknown},
 		{"pooler unexpected port", testProjectRef, "aws-0-us-east-1.pooler.supabase.com", 5440, RouteUnknown},
 		{"malformed pooler hostname", testProjectRef, "evil.aws-0-us-east-1.pooler.supabase.com", 5432, RouteUnknown},
+		{"pooler index is not numeric", testProjectRef, "aws-x-us-east-1.pooler.supabase.com", 5432, RouteUnknown},
+		{"pooler region missing", testProjectRef, "aws-1-.pooler.supabase.com", 5432, RouteUnknown},
 		{"invalid ref", "bad.ref", "db.bad.ref.supabase.co", 5432, RouteUnknown},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -51,24 +53,31 @@ func TestValidateConnectionParametersAcceptsCanonicalDirectRoute(t *testing.T) {
 	}
 }
 
-func TestValidateConnectionParametersRejectsPoolers(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		port uint16
-		want error
-	}{
-		{"session pooler is not yet qualified", 5432, ErrUnsupportedRoute},
-		{"transaction pooler is blocked", 6543, ErrUnsupportedRoute},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			params := validConnectionParams(t)
-			params.Host = "aws-0-us-east-1.pooler.supabase.com"
-			params.Port = test.port
-			params.User = "postgres." + testProjectRef
-			if err := params.Validate(); err != test.want {
-				t.Fatalf("Validate() = %v, want %v", err, test.want)
-			}
-		})
+func TestValidateConnectionParametersAcceptsProjectBoundSessionPooler(t *testing.T) {
+	params := validConnectionParams(t)
+	params.Host = "aws-1-us-east-2.pooler.supabase.com"
+	params.User = "postgres." + testProjectRef
+	if err := params.Validate(); err != nil {
+		t.Fatalf("valid session-pooler parameters rejected: %v", err)
+	}
+}
+
+func TestValidateConnectionParametersRejectsMismatchedSessionPoolerIdentity(t *testing.T) {
+	params := validConnectionParams(t)
+	params.Host = "aws-1-us-east-2.pooler.supabase.com"
+	params.User = "postgres.otherprojectref1234"
+	if err := params.Validate(); err != ErrConnectionParameters {
+		t.Fatalf("Validate() = %v, want fixed parameter error", err)
+	}
+}
+
+func TestValidateConnectionParametersRejectsTransactionPooler(t *testing.T) {
+	params := validConnectionParams(t)
+	params.Host = "aws-1-us-east-2.pooler.supabase.com"
+	params.Port = transactionPort
+	params.User = "postgres." + testProjectRef
+	if err := params.Validate(); err != ErrUnsupportedRoute {
+		t.Fatalf("Validate() = %v, want unsupported-route refusal", err)
 	}
 }
 

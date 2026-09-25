@@ -12,11 +12,17 @@ func TestObserveCatalogRejectsInvalidInputsBeforeConnecting(t *testing.T) {
 		want error
 	}{
 		{"invalid schema", func(p *ConnectionParams) []string { return []string{"bad\nname"} }, ErrInvalidSchemaSelection},
-		{"unsupported route", func(p *ConnectionParams) []string {
+		{"unsupported transaction route", func(p *ConnectionParams) []string {
 			p.Host = "aws-0-us-east-1.pooler.supabase.com"
+			p.Port = transactionPort
 			p.User = "postgres." + testProjectRef
 			return nil
 		}, ErrUnsupportedRoute},
+		{"session route ref mismatch", func(p *ConnectionParams) []string {
+			p.Host = "aws-0-us-east-1.pooler.supabase.com"
+			p.User = "postgres.otherprojectref1234"
+			return nil
+		}, ErrConnectionParameters},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			clearDatabaseEnvironment(t)
