@@ -27,6 +27,17 @@ baselines, migration history, Auth, Storage, Vault, and service configuration ne
 own qualified handling. No generic SQL rewrite engine, unfiltered upstream script copy,
 or permissive restore-error handling is authorized.
 
+A fresh local two-cluster PostgreSQL 17 test (`TestCrossClusterRestoreRequiresTargetOwner`)
+now demonstrates this failure directly. A native custom-format dump of a synthetic
+schema owned by a `NOLOGIN` role fails on a separate empty target without that role;
+`--exit-on-error --single-transaction` leaves the target schema absent. After
+explicitly provisioning the synthetic owner role in the target, the same dump
+restores its row and relation owner with the source cluster shut down. The
+existing `sparc-localdemo` runs its source and target *databases in one cluster*,
+so it could not reveal missing cluster-wide roles. This is a recipe blocker,
+not a license to copy source roles or bypass ownership. No hosted Supabase
+baseline or role-provisioning policy has been qualified.
+
 The source is observed read-only. Capture needs a coherent snapshot or a documented quiet
 window; separate passes do not imply cross-service atomicity. Restore uses target and
 archive inputs only, refuses nonempty/ambiguous targets, and remains quarantined after a

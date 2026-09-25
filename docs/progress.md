@@ -1252,10 +1252,27 @@ environment. It creates a private temporary cluster bound only to IPv4
 loopback, creates fixed synthetic source/target databases, streams `pg_dump`
 output directly into the encrypted archive writer, verifies the archive, drops
 the source, and restores into the fresh target. It checks rows and sequence
-state, stops the cluster, and removes its private temporary files. Trust auth
+state, stops the cluster, and removes its private temporary files. Its source
+and target are databases **in the same cluster**, so it does not test
+cluster-wide role portability. Trust auth
 and TLS-off are confined to this synthetic loopback cluster. The retained
 archive is one schema and marked **incomplete**. No user DB URL, project
 credential, or hosted service is accepted.
+
+A separate `TestCrossClusterRestoreRequiresTargetOwner` uses two independent
+synthetic PostgreSQL 17 loopback clusters. With the source server shut down,
+`pg_restore --single-transaction --exit-on-error` fails specifically on a
+missing owner role and leaves the target schema absent; after explicit synthetic
+target-role provisioning, the same dump restores its row and owner. This exposes
+a missing-globals recipe prerequisite the same-cluster demo cannot prove. The
+test uses a temporary plaintext native dump, not a SPARC archive; it does not
+authorize automatic role creation or claim hosted support. See
+`docs/research/R04-database-route.md`. Fresh macOS arm64 checks passed:
+full default and localdemo-tagged suites, full PostgreSQL-tagged integration
+and race suites with `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin`,
+default and integration vet, Windows AMD64/Darwin arm64 integration-test
+cross-compiles, gofmt, and `git diff --check`. Cross-compiles are not native
+Windows runtime evidence.
 
 The integration test `TestLocalRecoveryRehearsal` calls the same runtime flow
 and removes its archive with the test temporary directory. The separate
