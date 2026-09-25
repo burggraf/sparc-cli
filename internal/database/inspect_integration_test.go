@@ -164,6 +164,7 @@ func TestObserveCatalogReportsRelationAndColumnACLs(t *testing.T) {
 	for _, statement := range []string{
 		"CREATE ROLE sparc_acl_owner NOLOGIN",
 		"CREATE ROLE sparc_acl_reader NOLOGIN",
+		"CREATE ROLE \"PUBLIC\" NOLOGIN",
 		"CREATE TABLE public.sparc_acl_null_canary (value text NOT NULL)",
 		"CREATE TABLE public.sparc_acl_empty_canary (value text NOT NULL)",
 		"GRANT SELECT ON TABLE public.sparc_acl_empty_canary TO PUBLIC",
@@ -174,6 +175,7 @@ func TestObserveCatalogReportsRelationAndColumnACLs(t *testing.T) {
 		"SET ROLE sparc_acl_owner",
 		"GRANT SELECT ON TABLE public.sparc_acl_granted_canary TO sparc_acl_reader WITH GRANT OPTION",
 		"GRANT SELECT (value) ON TABLE public.sparc_acl_granted_canary TO PUBLIC",
+		"GRANT UPDATE ON TABLE public.sparc_acl_granted_canary TO \"PUBLIC\"",
 		"RESET ROLE",
 	} {
 		if _, err := admin.Exec(ctx, statement); err != nil {
@@ -220,6 +222,15 @@ func TestObserveCatalogReportsRelationAndColumnACLs(t *testing.T) {
 	if !foundNamedGrant {
 		t.Fatalf("named relation grant identity/options missing: %+v", relationACL.Grants)
 	}
+	foundNamedPublic := false
+	for _, grant := range relationACL.Grants {
+		if grant.Grantee == "PUBLIC" && grant.Privilege == "UPDATE" && !grant.GranteeIsPublic {
+			foundNamedPublic = true
+		}
+	}
+	if !foundNamedPublic {
+		t.Fatal("quoted named role PUBLIC was confused with the PUBLIC pseudo-role")
+	}
 
 	columnACL, found := findACL("public", "sparc_acl_granted_canary", "value")
 	if !found || columnACL.ACLIsNull {
@@ -227,7 +238,7 @@ func TestObserveCatalogReportsRelationAndColumnACLs(t *testing.T) {
 	}
 	foundPublicGrant := false
 	for _, grant := range columnACL.Grants {
-		if grant.Grantee == "PUBLIC" && grant.Grantor == "sparc_acl_owner" && grant.Privilege == "SELECT" && !grant.Grantable {
+		if grant.Grantee == "PUBLIC" && grant.GranteeIsPublic && grant.Grantor == "sparc_acl_owner" && grant.Privilege == "SELECT" && !grant.Grantable {
 			foundPublicGrant = true
 		}
 	}
@@ -284,7 +295,7 @@ func TestObserveCatalogReportsDefaultACLs(t *testing.T) {
 	}
 	global, found := findDefault("sparc_default_creator", "", "r")
 	if !found || global.ACLIsNull || !hasGrant(global, ACLGrantObservation{
-		Grantee: "PUBLIC", Grantor: "sparc_default_creator", Privilege: "SELECT",
+		Grantee: "PUBLIC", GranteeIsPublic: true, Grantor: "sparc_default_creator", Privilege: "SELECT",
 	}) || !hasGrant(global, ACLGrantObservation{
 		Grantee: "sparc_default_creator", Grantor: "sparc_default_creator", Privilege: "SELECT",
 	}) {
@@ -341,6 +352,87 @@ func TestObserveCatalogReportsRoleAttributesAndMembershipOptions(t *testing.T) {
 	}
 	if !foundMembership {
 		t.Fatal("role membership identity/options were not observed by name")
+	}
+}
+
+func TestObserveCatalogReportsPolicyRolesAndRLSBehavior(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal("unable to connect to local policy fixture")
+	}
+	defer admin.Close(ctx)
+	for _, statement := range []string{
+		"CREATE ROLE sparc_policy_owner LOGIN PASSWORD '" + fixturePassword + "'",
+		"CREATE ROLE sparc_policy_reader LOGIN PASSWORD '" + fixturePassword + "'",
+		"CREATE ROLE sparc_policy_bypass LOGIN BYPASSRLS PASSWORD '" + fixturePassword + "'",
+		"CREATE ROLE \"PUBLIC\" NOLOGIN",
+		"CREATE TABLE public.sparc_policy_canary (value text NOT NULL)",
+		"INSERT INTO public.sparc_policy_canary VALUES ('visible'), ('hidden')",
+		"ALTER TABLE public.sparc_policy_canary OWNER TO sparc_policy_owner",
+		"GRANT USAGE ON SCHEMA public TO sparc_policy_reader, sparc_policy_bypass",
+		"GRANT SELECT ON public.sparc_policy_canary TO sparc_policy_reader, sparc_policy_bypass",
+		"ALTER TABLE public.sparc_policy_canary ENABLE ROW LEVEL SECURITY",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to seed synthetic RLS fixture")
+		}
+	}
+	countAs := func(role string) int {
+		t.Helper()
+		conn, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, role))
+		if err != nil {
+			t.Fatal("unable to connect to local policy fixture role")
+		}
+		defer conn.Close(ctx)
+		var count int
+		if err := conn.QueryRow(ctx, "SELECT count(*) FROM public.sparc_policy_canary").Scan(&count); err != nil {
+			t.Fatal("unable to read synthetic RLS canary")
+		}
+		return count
+	}
+	if owner, reader, bypass := countAs("sparc_policy_owner"), countAs("sparc_policy_reader"), countAs("sparc_policy_bypass"); owner != 2 || reader != 0 || bypass != 2 {
+		t.Fatalf("default-deny/owner/BYPASSRLS counts = %d/%d/%d, want 2/0/2", owner, reader, bypass)
+	}
+	for _, statement := range []string{
+		"CREATE POLICY sparc_reader_policy ON public.sparc_policy_canary FOR SELECT TO sparc_policy_reader USING (value = 'visible')",
+		"CREATE POLICY sparc_public_policy ON public.sparc_policy_canary FOR SELECT TO PUBLIC USING (false)",
+		"CREATE POLICY sparc_named_public_policy ON public.sparc_policy_canary FOR SELECT TO \"PUBLIC\" USING (false)",
+		"CREATE POLICY sparc_restrictive_policy ON public.sparc_policy_canary AS RESTRICTIVE FOR ALL TO sparc_policy_reader USING (value = 'visible') WITH CHECK (value = 'visible')",
+		"ALTER TABLE public.sparc_policy_canary FORCE ROW LEVEL SECURITY",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to seed selected RLS policies")
+		}
+	}
+	if owner, reader, bypass := countAs("sparc_policy_owner"), countAs("sparc_policy_reader"), countAs("sparc_policy_bypass"); owner != 0 || reader != 1 || bypass != 2 {
+		t.Fatalf("forced-RLS/policy/BYPASSRLS counts = %d/%d/%d, want 0/1/2", owner, reader, bypass)
+	}
+	observation, err := observeCatalog(ctx, fixture.config(t, fixture.caPath), []string{"public"})
+	if err != nil {
+		t.Fatal("unable to observe policy facts")
+	}
+	found := map[string]bool{}
+	for _, policy := range observation.Policies {
+		if policy.Schema != "public" || policy.Relation != "sparc_policy_canary" {
+			continue
+		}
+		switch policy.Name {
+		case "sparc_reader_policy":
+			found[policy.Name] = policy.Command == "r" && policy.Permissive && policy.HasUsing && !policy.HasWithCheck && len(policy.Roles) == 1 && policy.Roles[0] == (PolicyRoleObservation{Name: "sparc_policy_reader"})
+		case "sparc_public_policy":
+			found[policy.Name] = policy.Command == "r" && policy.Permissive && len(policy.Roles) == 1 && policy.Roles[0] == (PolicyRoleObservation{Name: "PUBLIC", IsPublic: true})
+		case "sparc_restrictive_policy":
+			found[policy.Name] = policy.Command == "*" && !policy.Permissive && policy.HasUsing && policy.HasWithCheck && len(policy.Roles) == 1 && policy.Roles[0] == (PolicyRoleObservation{Name: "sparc_policy_reader"})
+		case "sparc_named_public_policy":
+			found[policy.Name] = len(policy.Roles) == 1 && policy.Roles[0] == (PolicyRoleObservation{Name: "PUBLIC"})
+		}
+	}
+	for _, name := range []string{"sparc_reader_policy", "sparc_public_policy", "sparc_restrictive_policy", "sparc_named_public_policy"} {
+		if !found[name] {
+			t.Fatalf("policy %s role/effect facts missing", name)
+		}
 	}
 }
 

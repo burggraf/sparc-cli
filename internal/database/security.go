@@ -48,6 +48,7 @@ func observeACLs(ctx context.Context, tx pgx.Tx, schemaNames []string) ([]ACLObs
 		         WHEN access.grantee = 0 THEN 'PUBLIC'
 		         ELSE pg_catalog.pg_get_userbyid(access.grantee)::text
 		       END,
+		       COALESCE(access.grantee = 0, false),
 		       COALESCE(pg_catalog.pg_get_userbyid(access.grantor)::text, ''),
 		       COALESCE(access.privilege_type::text, ''),
 		       COALESCE(access.is_grantable, false)
@@ -109,8 +110,8 @@ func observeACLs(ctx context.Context, tx pgx.Tx, schemaNames []string) ([]ACLObs
 			return nil, ErrCatalogObservation
 		}
 		var schema, relation, column, grantee, grantor, privilege string
-		var aclIsNull, grantable bool
-		if err := rows.Scan(&schema, &relation, &column, &aclIsNull, &grantee, &grantor, &privilege, &grantable); err != nil {
+		var aclIsNull, grantable, granteeIsPublic bool
+		if err := rows.Scan(&schema, &relation, &column, &aclIsNull, &grantee, &granteeIsPublic, &grantor, &privilege, &grantable); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -126,18 +127,18 @@ func observeACLs(ctx context.Context, tx pgx.Tx, schemaNames []string) ([]ACLObs
 			return nil, ErrCatalogObservation
 		}
 		if grantee == "" && grantor == "" && privilege == "" {
-			if grantable {
+			if grantable || granteeIsPublic {
 				rows.Close()
 				return nil, ErrCatalogObservation
 			}
 			continue
 		}
-		if !validIdentifier(grantee) || !validIdentifier(grantor) || !validIdentifier(privilege) {
+		if !validIdentifier(grantee) || !validIdentifier(grantor) || !validIdentifier(privilege) || granteeIsPublic && grantee != "PUBLIC" {
 			rows.Close()
 			return nil, ErrCatalogObservation
 		}
 		observations[len(observations)-1].Grants = append(observations[len(observations)-1].Grants, ACLGrantObservation{
-			Grantee: grantee, Grantor: grantor, Privilege: privilege, Grantable: grantable,
+			Grantee: grantee, GranteeIsPublic: granteeIsPublic, Grantor: grantor, Privilege: privilege, Grantable: grantable,
 		})
 	}
 	rowErr := rows.Err()
@@ -160,6 +161,7 @@ func observeDefaultACLs(ctx context.Context, tx pgx.Tx, schemaNames []string) ([
 		         WHEN access.grantee = 0 THEN 'PUBLIC'
 		         ELSE pg_catalog.pg_get_userbyid(access.grantee)::text
 		       END,
+		       COALESCE(access.grantee = 0, false),
 		       COALESCE(pg_catalog.pg_get_userbyid(access.grantor)::text, ''),
 		       COALESCE(access.privilege_type::text, ''),
 		       COALESCE(access.is_grantable, false)
@@ -203,8 +205,8 @@ func observeDefaultACLs(ctx context.Context, tx pgx.Tx, schemaNames []string) ([
 			return nil, ErrCatalogObservation
 		}
 		var creator, schema, objectType, grantee, grantor, privilege string
-		var aclIsNull, grantable bool
-		if err := rows.Scan(&creator, &schema, &objectType, &aclIsNull, &grantee, &grantor, &privilege, &grantable); err != nil {
+		var aclIsNull, grantable, granteeIsPublic bool
+		if err := rows.Scan(&creator, &schema, &objectType, &aclIsNull, &grantee, &granteeIsPublic, &grantor, &privilege, &grantable); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -220,18 +222,18 @@ func observeDefaultACLs(ctx context.Context, tx pgx.Tx, schemaNames []string) ([
 			return nil, ErrCatalogObservation
 		}
 		if grantee == "" && grantor == "" && privilege == "" {
-			if grantable {
+			if grantable || granteeIsPublic {
 				rows.Close()
 				return nil, ErrCatalogObservation
 			}
 			continue
 		}
-		if !validIdentifier(grantee) || !validIdentifier(grantor) || !validIdentifier(privilege) {
+		if !validIdentifier(grantee) || !validIdentifier(grantor) || !validIdentifier(privilege) || granteeIsPublic && grantee != "PUBLIC" {
 			rows.Close()
 			return nil, ErrCatalogObservation
 		}
 		observations[len(observations)-1].Grants = append(observations[len(observations)-1].Grants, ACLGrantObservation{
-			Grantee: grantee, Grantor: grantor, Privilege: privilege, Grantable: grantable,
+			Grantee: grantee, GranteeIsPublic: granteeIsPublic, Grantor: grantor, Privilege: privilege, Grantable: grantable,
 		})
 	}
 	rowErr := rows.Err()
@@ -335,6 +337,91 @@ func observeMemberships(ctx context.Context, tx pgx.Tx) ([]MembershipObservation
 			return nil, ErrCatalogObservation
 		}
 		observations = append(observations, membership)
+	}
+	rowErr := rows.Err()
+	rows.Close()
+	if rowErr != nil {
+		return nil, rowErr
+	}
+	return observations, nil
+}
+
+func observePolicies(ctx context.Context, tx pgx.Tx, schemaNames []string) ([]PolicyObservation, error) {
+	observations := make([]PolicyObservation, 0)
+	if len(schemaNames) == 0 {
+		return observations, nil
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT policy.schema_name, policy.relation_name, policy.policy_name,
+		       policy.command, policy.permissive, policy.has_using,
+		       policy.has_with_check, policy.role_present, policy.is_public,
+		       policy.role_name
+		FROM (
+		  SELECT namespace.nspname::text AS schema_name,
+		         relation.relname::text AS relation_name,
+		         rule.polname::text AS policy_name,
+		         rule.polcmd::text AS command,
+		         rule.polpermissive AS permissive,
+		         rule.polqual IS NOT NULL AS has_using,
+		         rule.polwithcheck IS NOT NULL AS has_with_check,
+		         assigned.role_oid IS NOT NULL AS role_present,
+		         COALESCE(assigned.role_oid = 0, false) AS is_public,
+		         CASE WHEN assigned.role_oid = 0 THEN 'PUBLIC'::text
+		              ELSE COALESCE(role.rolname::text, '') END AS role_name
+		  FROM unnest($1::text[]) AS requested(name)
+		  JOIN pg_catalog.pg_namespace AS namespace
+		    ON namespace.nspname::text COLLATE "C" = requested.name COLLATE "C"
+		  JOIN pg_catalog.pg_class AS relation
+		    ON relation.relnamespace = namespace.oid
+		  JOIN pg_catalog.pg_policy AS rule
+		    ON rule.polrelid = relation.oid
+		  LEFT JOIN LATERAL unnest(rule.polroles) AS assigned(role_oid) ON true
+		  LEFT JOIN pg_catalog.pg_roles AS role
+		    ON role.oid = assigned.role_oid
+		  LIMIT $2
+		) AS policy
+		ORDER BY policy.schema_name COLLATE "C",
+		         policy.relation_name COLLATE "C",
+		         policy.policy_name COLLATE "C",
+		         policy.role_name COLLATE "C",
+		         policy.is_public
+	`, schemaNames, maxObservedPolicyRows+1)
+	if err != nil {
+		return nil, err
+	}
+	rowCount := 0
+	for rows.Next() {
+		rowCount++
+		if rowCount > maxObservedPolicyRows {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		var schema, relation, name, command, roleName string
+		var permissive, hasUsing, hasWithCheck, rolePresent, isPublic bool
+		if err := rows.Scan(&schema, &relation, &name, &command, &permissive, &hasUsing, &hasWithCheck, &rolePresent, &isPublic, &roleName); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !validIdentifier(schema) || !validIdentifier(relation) || !validIdentifier(name) || len(command) != 1 || !validText(command) ||
+			rolePresent && (!validIdentifier(roleName) || isPublic && roleName != "PUBLIC") ||
+			!rolePresent && (roleName != "" || isPublic) {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		newPolicy := len(observations) == 0 || observations[len(observations)-1].Schema != schema || observations[len(observations)-1].Relation != relation || observations[len(observations)-1].Name != name
+		if newPolicy {
+			observations = append(observations, PolicyObservation{
+				Schema: schema, Relation: relation, Name: name, Command: command,
+				Permissive: permissive, HasUsing: hasUsing, HasWithCheck: hasWithCheck,
+				Roles: make([]PolicyRoleObservation, 0),
+			})
+		} else if prior := observations[len(observations)-1]; prior.Command != command || prior.Permissive != permissive || prior.HasUsing != hasUsing || prior.HasWithCheck != hasWithCheck {
+			rows.Close()
+			return nil, ErrCatalogObservation
+		}
+		if rolePresent {
+			observations[len(observations)-1].Roles = append(observations[len(observations)-1].Roles, PolicyRoleObservation{Name: roleName, IsPublic: isPublic})
+		}
 	}
 	rowErr := rows.Err()
 	rows.Close()

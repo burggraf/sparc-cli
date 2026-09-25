@@ -1120,8 +1120,11 @@ configuration-presence flags, but never routine bodies. It observes explicit
 rows maximum), plus cluster-wide role attributes (4,096 roles) and membership
 identities/grantor/admin/inherit/set options (65,536 edges). Role identities are
 names, not local OIDs; no password hashes or role configuration are queried.
-Unknown relation-kind codes remain raw observations. RLS policy roles/effects
-and trigger behavior/definitions are not collected; these facts are not a
+Unknown relation-kind codes remain raw observations. Selected-schema RLS
+policy names, commands, permissive flags, role identities and expression
+presence are recorded (65,536 expanded rows maximum), but predicate trees are
+not read. `PUBLIC` pseudo-principals are distinguished from named `"PUBLIC"`
+roles. Trigger behavior/definitions are not collected; these facts are not a
 security or behavior baseline. It does not materialize implicit built-in
 default privileges, traverse dependencies, capture database/schema owners,
 column definitions, or data. Only PostgreSQL major 17 is accepted; this is not a
@@ -1185,6 +1188,14 @@ full inventory, tenant-identity proof, or hosted-support claim.
   defaults are omitted and PostgreSQL's creator ACL entries are preserved
   alongside an explicit `PUBLIC SELECT`. Password hashes and role settings are
   not queried; these observations are not an expected profile.
+- **Red/green (RLS and pseudo-principal identity):** The focused PG17.9 test
+  first failed to compile without `CatalogObservation.Policies`. It now proves
+  default-deny for a granted reader, owner bypass versus forced RLS, named
+  permissive/restrictive policies, and a BYPASSRLS role's separate behavior.
+  A quoted role named `"PUBLIC"` remains distinct from the unquoted PUBLIC
+  pseudo-principal in both policy roles and ACL grant facts. No policy
+  predicate trees, role passwords or security-equivalence conclusion are
+  recorded. The guard remains narrow and is not wired to a restore path.
 - **Red/green (relation owner):** A local integration test first failed to
   compile because `RelationObservation.Owner` did not exist. The observation now
   reports selected relation owner role names (not local OIDs); a synthetic
@@ -1222,9 +1233,9 @@ full inventory, tenant-identity proof, or hosted-support claim.
   `go test -mod=readonly -race ./internal/database -count=1 -timeout=120s`,
   `go vet -mod=readonly ./...`, CLI build, Windows AMD64/Darwin arm64 database
   test cross-compiles, `gofmt -d`, and `git diff --check` passed.
-- **2026-09-23 catalog-permissions update:** default and localdemo-tagged full
-  suites, default/tagged vet, full PostgreSQL integration and race suites,
-  integration-tagged vet, Windows AMD64 and Darwin arm64 integration-test
+- **2026-09-25 RLS/ACL identity update:** default and localdemo-tagged full
+  suites, default/localdemo/integration vet, full PostgreSQL 17.9 integration
+  and race suites, Windows AMD64 and Darwin arm64 integration-test
   cross-compiles, gofmt, and `git diff --check` passed on macOS arm64.
 
 **Still open:** expand catalog/security/dependency observation and selector
@@ -1256,9 +1267,9 @@ and full tagged database and race suites passed on macOS. Full
 `go test -mod=readonly ./... -count=1 -timeout=240s` and
 `go vet -mod=readonly ./...` also passed. There is still no product restore
 path on which to prove preflight before mutation; no mock mutation wrapper was
-added. Named-role policy evaluation, ownership expectations, RLS behavior,
-drift and full Tasks 10–11 remain open. Role/default observations are evidence
-only, not an expected profile or restore gate.
+added. Policy predicate equivalence, ownership expectations, security-definer
+behavior, drift and full Tasks 10–11 remain open. Role/default/policy
+observations are evidence only, not an expected profile or restore gate.
 No hosted project or credential was used; hosted public/Auth qualification
 waits for Task 12 and separate exact authorization.
 
