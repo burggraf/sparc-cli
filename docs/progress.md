@@ -99,14 +99,35 @@ below are historical observations run with the already-installed local Go
   `dd27f2b3c59e73ed14aa3324901242bf69a032a6347805f274e6260322d42979`;
   EDB is explicitly uninspected only.
 
+### Authorized PG17.11 macOS arm64 source candidate (2026-09-25)
+
+The operator approved only pinned official source acquisition/verification,
+local build/inspection and disposable local exercise; no redistribution or
+hosted access. The 21,787,224-byte HTTPS archive matched the recorded SHA-256
+before extraction. A local source build produced arm64 `pg_dump` and
+`pg_restore` 17.11 plus `libpq`; native `otool` inspection found hardcoded
+private-prefix `libpq`, Homebrew OpenSSL paths, and macOS `minos 27.0`. It is
+**not a portable or approved production payload**. Opt-in native TLS tests
+with these clients against two disposable PG17.9 clusters passed: wrong CA and
+hostname refused, correct TLS dump and restore worked with the source stopped,
+missing owner role refused without target schema mutation, and explicit local
+role provisioning permitted owner/data restoration. See
+`docs/research/R02-client-provenance.md` for exact hashes, imports, toolchain,
+licenses and limits. Fresh guarded checks passed on this host: default and
+localdemo-tagged full suites, full PG17.9 integration suite, race-enabled
+candidate-client two-cluster test, default/integration vet, Windows AMD64 and
+Darwin arm64 integration test cross-compiles, gofmt, and `git diff --check`.
+Neither the candidate nor its 17.9 test servers are hosted qualification.
+No source, native payload, or test dump was added to Git.
+
 ### Open blockers
 
 Ad-hoc signing proves byte/signature preservation only—not Developer ID,
 notarization, Gatekeeper, or public trust. Denied-write and browser-quarantine
-observations are pending. PostgreSQL/EDB file inventories, imports, licenses,
-minimum OS, signed digests, native TLS dump/restore, macOS trusted-notary
-behavior, and Windows trust behavior need separate owner approval. Adjacent
-tools remain control/fallback only and require owner approval before selection.
+observations are pending. The macOS arm64 candidate's absolute library paths
+and current minimum OS block release; other architecture inventories, complete
+notices, signing, hosted recipe and Windows trust remain open. Adjacent tools
+remain control/fallback only and require owner approval before selection.
 
 ## Task 03 — Support profile and coverage report contract
 

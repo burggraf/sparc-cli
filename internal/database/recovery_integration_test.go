@@ -26,6 +26,13 @@ import (
 func TestCrossClusterRestoreRequiresTargetOwner(t *testing.T) {
 	source := newPostgresFixture(t)
 	target := newPostgresFixture(t)
+	clientBin := source.binDir
+	if candidate := os.Getenv("SPARC_TEST_PG_CLIENT_BIN"); candidate != "" {
+		if !filepath.IsAbs(candidate) || filepath.Clean(candidate) != candidate {
+			t.Fatal("SPARC_TEST_PG_CLIENT_BIN must be an absolute clean path")
+		}
+		clientBin = candidate
+	}
 	ctx := context.Background()
 	admin, err := pgx.ConnectConfig(ctx, source.configForUser(t, source.caPath, "postgres"))
 	if err != nil {
@@ -59,14 +66,33 @@ func TestCrossClusterRestoreRequiresTargetOwner(t *testing.T) {
 	connection := func(f *postgresFixture) string {
 		return fmt.Sprintf("host=%s hostaddr=127.0.0.1 port=%d user=postgres dbname=postgres sslmode=verify-full sslrootcert='%s'", f.params.Host, f.port, f.caPath)
 	}
-	runFixtureCommand(t, source.binDir, "pg_dump", "--format=custom", "--schema=sparc_recovery", "--no-password", "--file", dump, "--dbname", connection(source))
+	// Both probes must fail during native TLS verification, before pg_dump can
+	// access the synthetic source or publish a usable dump.
+	for _, probe := range []struct{ host, ca, diagnostic string }{
+		{source.params.Host, source.wrongCAPath, "certificate verify failed"},
+		{"wrong.example.test", source.caPath, "does not match host name"},
+	} {
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		connInfo := fmt.Sprintf("host=%s hostaddr=127.0.0.1 port=%d user=postgres dbname=postgres sslmode=verify-full sslrootcert='%s'", probe.host, source.port, probe.ca)
+		cmd := exec.CommandContext(probeCtx, fixtureBinaryPath(clientBin, "pg_dump"), "--format=custom", "--schema=sparc_recovery", "--no-password", "--file", filepath.Join(t.TempDir(), "rejected.dump"), "--dbname", connInfo)
+		cmd.Env = os.Environ()
+		var diagnostic bytes.Buffer
+		cmd.Stderr = &diagnostic
+		err := cmd.Run()
+		probeErr := probeCtx.Err()
+		cancel()
+		if err == nil || probeErr != nil || !strings.Contains(diagnostic.String(), probe.diagnostic) {
+			t.Fatal("native pg_dump did not specifically reject bad TLS trust or hostname")
+		}
+	}
+	runFixtureCommand(t, clientBin, "pg_dump", "--format=custom", "--schema=sparc_recovery", "--no-password", "--file", dump, "--dbname", connection(source))
 	// The source is shut down before any target restore attempt.
 	runFixtureCommand(t, source.binDir, "pg_ctl", "-D", source.dataDir, "-m", "immediate", "-w", "stop")
 
 	restore := func() (error, string) {
 		restoreCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(restoreCtx, fixtureBinaryPath(target.binDir, "pg_restore"), "--single-transaction", "--exit-on-error", "--no-password", "--dbname", connection(target), dump)
+		cmd := exec.CommandContext(restoreCtx, fixtureBinaryPath(clientBin, "pg_restore"), "--single-transaction", "--exit-on-error", "--no-password", "--dbname", connection(target), dump)
 		cmd.Env = os.Environ()
 		var diagnostic bytes.Buffer
 		cmd.Stderr = &diagnostic
