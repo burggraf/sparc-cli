@@ -118,7 +118,10 @@ localdemo-tagged full suites, full PG17.9 integration suite, race-enabled
 candidate-client two-cluster test, default/integration vet, Windows AMD64 and
 Darwin arm64 integration test cross-compiles, gofmt, and `git diff --check`.
 Neither the candidate nor its 17.9 test servers are hosted qualification.
-No source, native payload, or test dump was added to Git.
+No source, native payload, or test dump was added to Git. A 2026-09-26 local
+check found sampled Homebrew OpenSSL static-library objects also encode
+`minos 27.0`, so static-linking is not a proven solution for lowering the
+candidate's OS floor. No additional dependency source was acquired; see R02.
 
 ### Open blockers
 

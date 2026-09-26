@@ -70,6 +70,19 @@ with the source shut down. This is local mechanism evidence only; it does not
 qualify a signed payload, hosted route, Supabase role baseline, portability or
 redistribution.
 
+### Local OpenSSL portability check (2026-09-26)
+
+The installed Homebrew OpenSSL 3.6.4 contains arm64 static archives, but sampled
+`libssl.a` and `libcrypto.a` Mach-O object members both encode
+`LC_BUILD_VERSION minos 27.0` under Xcode 27.0. Static-linking these installed archives is not a
+proven way to lower the candidate's OS floor; other archive members and the
+actual linked closure were not exhaustively inspected. A lower deployment
+experiment needs a separately built dependency closure (or another qualified
+source), not merely `-static`.
+No dependency source was newly acquired, no second client was built, and no
+payload was added to Git. OpenSSL source acquisition/build, signing, and
+redistribution remain unapproved.
+
 EDB PostgreSQL binary archives are retained only as an **uninspected control
 candidate** (<https://www.enterprisedb.com/download-postgresql-binaries>). No
 EDB archive, direct artifact URL, checksum, architecture slice, dependency tree,
