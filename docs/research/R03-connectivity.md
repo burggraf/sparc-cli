@@ -265,7 +265,19 @@ project identity. They are not production support claims.
 
 A fake SQL runner or `httptest` cannot establish PostgreSQL wire-protocol TLS,
 libpq behavior, provider routing, or tenant identity. No database connection is
-yet wired into the CLI, and no public backup/verify/restore command is enabled.
+wired into the CLI, and no public backup/verify/restore command is enabled.
+
+The opt-in `hosted` test `TestHostedReadOnlySupavisorProbe` reads its full
+connection URL only from `SPARC_HOSTED_TEST_URL_FILE`, which must be a private
+mode-0600 file outside the repository. It also requires explicit
+`SPARC_HOSTED_TEST_PROJECT_REF` and `SPARC_HOSTED_TEST_CA_FILE` values. It
+accepts only the expected project's `postgres.<ref>` session-pooler URL, forces
+`verify-full` using the supplied CA, and calls `ObserveCatalog` once for
+`public`. The observer uses one 15-second-bounded read-only transaction and
+queries metadata only; it does not fetch table rows, dump, or mutate project
+state. Without all three explicit inputs the hosted probe skips. The separate
+parser tests can run locally without a hosted connection. Do not use a
+repository `.env` or put the connection URL in shell history or chat.
 
 ## Sources reviewed
 
