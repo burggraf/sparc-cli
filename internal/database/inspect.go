@@ -37,6 +37,7 @@ var (
 type SchemaObservation struct {
 	Name    string
 	Present bool
+	Owner   string
 }
 
 type ExtensionObservation struct {
@@ -48,6 +49,7 @@ type ExtensionObservation struct {
 type RoutineObservation struct {
 	Schema            string
 	Name              string
+	Owner             string
 	IdentityArguments string
 	Kind              string
 	Language          string
@@ -56,17 +58,19 @@ type RoutineObservation struct {
 }
 
 type RelationObservation struct {
-	Schema             string
-	Name               string
-	Owner              string
-	Kind               string
-	Persistence        string
-	IsPartition        bool
-	RowSecurityEnabled bool
-	ForceRowSecurity   bool
-	PolicyCount        int64
-	TriggerCount       int64
-	UserTriggerCount   int64
+	Schema              string
+	Name                string
+	Owner               string
+	Kind                string
+	ViewSecurityInvoker bool
+	ViewSecurityBarrier bool
+	Persistence         string
+	IsPartition         bool
+	RowSecurityEnabled  bool
+	ForceRowSecurity    bool
+	PolicyCount         int64
+	TriggerCount        int64
+	UserTriggerCount    int64
 }
 
 // ACLObservation records a relation ACL when Column is empty, otherwise a
@@ -145,6 +149,7 @@ type PolicyObservation struct {
 type CatalogObservation struct {
 	ServerVersionNum int
 	ServerMajor      int
+	DatabaseOwner    string
 	TLS              bool // client-to-endpoint verified TLS; not a pooler's backend leg.
 	ReadOnly         bool
 	Schemas          []SchemaObservation
@@ -219,16 +224,21 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 
 	var versionNum int
 	var readOnly bool
+	var databaseOwner string
 	if err := tx.QueryRow(ctx, `
 		SELECT pg_catalog.current_setting('server_version_num')::int,
-		       pg_catalog.current_setting('transaction_read_only') = 'on'
-	`).Scan(&versionNum, &readOnly); err != nil {
+		       pg_catalog.current_setting('transaction_read_only') = 'on',
+		       (SELECT pg_catalog.pg_get_userbyid(database.datdba)::text
+		        FROM pg_catalog.pg_database AS database
+		        WHERE database.datname = pg_catalog.current_database())
+	`).Scan(&versionNum, &readOnly, &databaseOwner); err != nil {
 		return CatalogObservation{}, contextOr(ctx, ErrCatalogObservation)
 	}
 
 	observation := CatalogObservation{
 		ServerVersionNum: versionNum,
 		ServerMajor:      serverMajor(versionNum),
+		DatabaseOwner:    databaseOwner,
 		TLS:              tlsActive,
 		ReadOnly:         readOnly,
 		Schemas:          make([]SchemaObservation, 0, len(schemaNames)),
@@ -240,6 +250,9 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		Roles:            make([]RoleObservation, 0),
 		Memberships:      make([]MembershipObservation, 0),
 		Policies:         make([]PolicyObservation, 0),
+	}
+	if !validIdentifier(observation.DatabaseOwner) {
+		return observation, ErrCatalogObservation
 	}
 	if !observation.ReadOnly {
 		return observation, ErrReadOnlyTransaction
@@ -253,7 +266,9 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 
 	if len(schemaNames) > 0 {
 		rows, err := tx.Query(ctx, `
-			SELECT requested.name, namespace.nspname IS NOT NULL
+			SELECT requested.name,
+		       namespace.nspname IS NOT NULL,
+		       COALESCE(pg_catalog.pg_get_userbyid(namespace.nspowner)::text, '')
 			FROM unnest($1::text[]) WITH ORDINALITY AS requested(name, ordinal)
 			LEFT JOIN pg_catalog.pg_namespace AS namespace
 			  ON namespace.nspname::text COLLATE "C" = requested.name COLLATE "C"
@@ -264,9 +279,13 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		}
 		for rows.Next() {
 			var schema SchemaObservation
-			if err := rows.Scan(&schema.Name, &schema.Present); err != nil {
+			if err := rows.Scan(&schema.Name, &schema.Present, &schema.Owner); err != nil {
 				rows.Close()
 				return observation, contextOr(ctx, ErrCatalogObservation)
+			}
+			if schema.Present && !validIdentifier(schema.Owner) || !schema.Present && schema.Owner != "" {
+				rows.Close()
+				return observation, ErrCatalogObservation
 			}
 			observation.Schemas = append(observation.Schemas, schema)
 		}
@@ -283,6 +302,8 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 			       relation.relname::text,
 			       pg_catalog.pg_get_userbyid(relation.relowner)::text,
 			       relation.relkind::text,
+			       COALESCE('security_invoker=true' = ANY(relation.reloptions), false),
+			       COALESCE('security_barrier=true' = ANY(relation.reloptions), false),
 			       relation.relpersistence::text,
 			       relation.relispartition,
 			       relation.relrowsecurity,
@@ -311,7 +332,7 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		}
 		for relationRows.Next() {
 			var relation RelationObservation
-			if err := relationRows.Scan(&relation.Schema, &relation.Name, &relation.Owner, &relation.Kind, &relation.Persistence, &relation.IsPartition, &relation.RowSecurityEnabled, &relation.ForceRowSecurity, &relation.PolicyCount, &relation.TriggerCount, &relation.UserTriggerCount); err != nil {
+			if err := relationRows.Scan(&relation.Schema, &relation.Name, &relation.Owner, &relation.Kind, &relation.ViewSecurityInvoker, &relation.ViewSecurityBarrier, &relation.Persistence, &relation.IsPartition, &relation.RowSecurityEnabled, &relation.ForceRowSecurity, &relation.PolicyCount, &relation.TriggerCount, &relation.UserTriggerCount); err != nil {
 				relationRows.Close()
 				return observation, contextOr(ctx, ErrCatalogObservation)
 			}
@@ -332,6 +353,7 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		routineRows, err := tx.Query(ctx, `
 			SELECT namespace.nspname::text,
 			       routine.proname::text,
+			       pg_catalog.pg_get_userbyid(routine.proowner)::text,
 			       CASE WHEN pg_catalog.octet_length(identity.arguments) <= $1
 			            THEN identity.arguments ELSE '' END,
 			       routine.prokind::text,
@@ -358,11 +380,11 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		for routineRows.Next() {
 			var routine RoutineObservation
 			var argumentBytes int
-			if err := routineRows.Scan(&routine.Schema, &routine.Name, &routine.IdentityArguments, &routine.Kind, &routine.Language, &routine.SecurityDefiner, &routine.HasConfiguration, &argumentBytes); err != nil {
+			if err := routineRows.Scan(&routine.Schema, &routine.Name, &routine.Owner, &routine.IdentityArguments, &routine.Kind, &routine.Language, &routine.SecurityDefiner, &routine.HasConfiguration, &argumentBytes); err != nil {
 				routineRows.Close()
 				return observation, contextOr(ctx, ErrCatalogObservation)
 			}
-			if argumentBytes > maxRoutineIdentityArguments || !validIdentifier(routine.Schema) || !validIdentifier(routine.Name) || !validText(routine.IdentityArguments) || len(routine.Kind) != 1 || !validIdentifier(routine.Language) {
+			if argumentBytes > maxRoutineIdentityArguments || !validIdentifier(routine.Schema) || !validIdentifier(routine.Name) || !validIdentifier(routine.Owner) || !validText(routine.IdentityArguments) || len(routine.Kind) != 1 || !validIdentifier(routine.Language) {
 				routineRows.Close()
 				return observation, ErrCatalogObservation
 			}

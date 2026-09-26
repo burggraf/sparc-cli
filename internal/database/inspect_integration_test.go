@@ -145,6 +145,57 @@ func TestObserveCatalogViaSessionPoolerShapeUsesTLSAndReadOnlyTransaction(t *tes
 	}
 }
 
+func TestObserveCatalogReportsOwnershipAndViewSecurityMetadata(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal("unable to connect to local fixture as administrator")
+	}
+	defer admin.Close(ctx)
+	for _, statement := range []string{
+		"CREATE ROLE sparc_metadata_owner NOLOGIN",
+		"CREATE SCHEMA sparc_owned AUTHORIZATION sparc_metadata_owner",
+		"CREATE FUNCTION public.sparc_metadata_definer() RETURNS integer LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$",
+		"ALTER FUNCTION public.sparc_metadata_definer() OWNER TO sparc_metadata_owner",
+		"CREATE VIEW public.sparc_default_view AS SELECT 1 AS value",
+		"CREATE VIEW public.sparc_secure_view WITH (security_invoker=true, security_barrier=true) AS SELECT 1 AS value",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatalf("unable to seed ownership/view fixture: %v", err)
+		}
+	}
+
+	observation, err := observeCatalog(ctx, fixture.config(t, fixture.caPath), []string{"public", "sparc_owned"})
+	if err != nil {
+		t.Fatalf("unable to observe ownership/view fixture: %v", err)
+	}
+	if observation.DatabaseOwner != "postgres" {
+		t.Fatalf("database owner = %q, want postgres", observation.DatabaseOwner)
+	}
+	if len(observation.Schemas) != 2 || observation.Schemas[0].Owner == "" ||
+		observation.Schemas[1].Owner != "sparc_metadata_owner" {
+		t.Fatalf("schema ownership was not observed: %+v", observation.Schemas)
+	}
+	var gotDefiner, gotDefaultView, gotSecureView bool
+	for _, routine := range observation.Routines {
+		if routine.Name == "sparc_metadata_definer" {
+			gotDefiner = routine.SecurityDefiner && routine.Owner == "sparc_metadata_owner"
+		}
+	}
+	for _, relation := range observation.Relations {
+		switch relation.Name {
+		case "sparc_default_view":
+			gotDefaultView = relation.Kind == "v" && !relation.ViewSecurityInvoker && !relation.ViewSecurityBarrier
+		case "sparc_secure_view":
+			gotSecureView = relation.Kind == "v" && relation.ViewSecurityInvoker && relation.ViewSecurityBarrier
+		}
+	}
+	if !gotDefiner || !gotDefaultView || !gotSecureView {
+		t.Fatalf("routine/view security metadata missing: routines=%+v relations=%+v", observation.Routines, observation.Relations)
+	}
+}
+
 func TestObserveCatalogReportsSelectedRelationOwner(t *testing.T) {
 	fixture := newPostgresFixture(t)
 	ctx := context.Background()

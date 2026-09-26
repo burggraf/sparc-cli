@@ -1255,9 +1255,9 @@ full inventory, independent tenant-identity attestation, or hosted-support claim
 
 **Still open:** expand catalog/security/dependency observation and selector
 coverage; add native Windows runtime coverage and durable wrong-major refusal;
-qualify positive system-root behavior and the selected native payload; and
-separately authorize any hosted route/identity test. No backup/verify/restore
-command is enabled.
+qualify the selected native payload. The later single-project hosted read-only
+route result is recorded in R03; it is not independent backend attestation or
+backup/restore qualification. No backup/verify/restore command is enabled.
 
 ## R05 — Destination permissions and ordinary `public` applications
 
@@ -1285,8 +1285,14 @@ path on which to prove preflight before mutation; no mock mutation wrapper was
 added. Policy predicate equivalence, ownership expectations, security-definer
 behavior, drift and full Tasks 10–11 remain open. Role/default/policy
 observations are evidence only, not an expected profile or restore gate.
-No hosted project or credential was used; hosted public/Auth qualification
-waits for Task 12 and separate exact authorization.
+A 2026-09-26 local PG17 extension now observes database/schema owners, routine
+owners/SECURITY DEFINER flags, and view security-invoker/barrier options. The
+new regression runs alongside the full default, hosted-parser, PostgreSQL
+integration and race suites, vet, and Windows AMD64 integration cross-compile.
+It remains catalog evidence only; no expected target profile or restore gate
+exists. The separately authorized R03 hosted metadata probe is not a permission
+baseline; broader hosted/public/Auth qualification still requires exact scoped
+authorization under Task 12.
 
 ## Task 11 — Developer-only backup/restore rehearsal and offline CLI verify
 
