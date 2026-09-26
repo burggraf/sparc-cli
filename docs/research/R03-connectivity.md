@@ -2,10 +2,10 @@
 
 **Status: open.** Public PostgreSQL 17, pgx, and Supabase connectivity documentation
 was reviewed on 2026-09-22, and temporary loopback TLS fixtures passed on the
-available macOS machine. A later separately authorized hosted probe connected
-and ran a bounded read-only metadata query, but the observer's server-side TLS
-check produced a false negative; no complete hosted observation or backup/restore
-qualification is claimed. See the dated outcome below.
+available macOS machine. A separately authorized hosted read-only metadata
+probe passed on one Supavisor session route after correcting the TLS observation.
+This is narrow candidate evidence, not general route, identity, backup, or restore
+qualification. See the dated outcome below.
 
 ## Repository-local facts
 
@@ -254,12 +254,12 @@ project identity. They are not production support claims.
 
 | Area | Evidence now available | Still required |
 | --- | --- | --- |
-| pgx TLS | v5.8.0 local `verify-full` over IPv4/IPv6; v5.11.0 durable local fixture passes explicit-CA `verify-full`, wrong-CA, hostname-mismatch, untrusted-system-root, and non-TLS refusal checks; hosted client-to-pooler TLS handshook with the embedded Supabase CA | Retest the corrected observer only with fresh authorization; execute native Windows runtime coverage |
+| pgx TLS | v5.8.0 local `verify-full` over IPv4/IPv6; v5.11.0 durable local fixture passes explicit-CA `verify-full`, wrong-CA, hostname-mismatch, untrusted-system-root, and non-TLS refusal checks; one hosted client-to-pooler TLS/read-only probe passed with the embedded Supabase CA | Execute native Windows runtime coverage; other hosted cases need separate authorization |
 | libpq TLS | psql 17.9 local `verify-full` positive/negative cases over IPv4/IPv6 | Test the exact selected/signed client payload and supported Windows/macOS runtime behavior |
 | Environment | v5.11.0 builder refuses all `PG*`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` variables; parser key allowlist, explicit route/TLS fields, empty passfile/servicefile/client-cert settings, and fixed runtime params are unit-tested. The durable local fixture ignores poisoned home/app-data passfile/client-cert/root files. | Qualify native-child environment separately; review process-environment mutation assumptions |
-| Route mapping | Unit contract binds session port 5432 to exact `postgres.<expected-ref>`; pgx retains the dashboard host for TLS; official Supavisor docs identify the username suffix as tenant `external_id` | Verify actual project Connect values and credential/tenant routing on an authorized disposable project; no independent backend attestation |
-| Pooler | Public docs distinguish direct/session/transaction routes; local PG17.9 fixture exercises TLS/read-only inspection using the session-host/username shape | Verify actual Supavisor routing on an authorized disposable project; native clients, `pg_dump`, and restore remain unqualified; transaction mode remains refused |
-| Catalog/selection | v5.11.0 durable local read-only transaction observes TLS/version, exact literal schema selectors, bounded extensions/routines, and selected-schema relation, partition, RLS/policy, and trigger-count facts | Expand only reviewed structural/security/dependency inventory; policy/trigger semantics, routine bodies, and dependency closure remain unqualified |
+| Route mapping | Unit contract binds session port 5432 to exact `postgres.<expected-ref>`; one supplied session-pooler route authenticated and passed metadata checks; official Supavisor docs identify the username suffix as tenant `external_id` | No independent backend attestation or negative-tenant check; other project routes need separate authorization |
+| Pooler | One authorized Supavisor session route passed a verified client TLS/read-only metadata probe; local PG17.9 fixture also exercises session-host/username shape | No claim about pooler-to-database TLS or independent backend identity; native clients, `pg_dump`, and restore remain unqualified; transaction mode remains refused |
+| Catalog/selection | One hosted read-only observation passed PostgreSQL 17 and `public`-schema-present gates; v5.11.0 local tests cover bounded catalog facts | Expand only reviewed structural/security/dependency inventory; policy/trigger semantics, routine bodies, and dependency closure remain unqualified |
 | Trust policy | Explicit private CA works with local pgx fixtures; bundled public Supabase Root 2021 CA byte-matches the official Supabase CLI copy; `verify-full` is retained | Refresh the embedded CA before its 2031-04-26 expiry or provider rotation; execute native Windows runtime coverage |
 | Version | Durable local fixture reports `server_version_num=170009`; unit gate accepts only major 17 | Add durable wrong-major integration refusal and prove gate before capture/restore |
 
@@ -284,20 +284,17 @@ force. This removes the operator's CA-file step for the current Supabase CA,
 but requires SPARC to refresh the public trust anchor before expiry or provider
 rotation. Native libpq payloads are not covered.
 
-The single separately authorized hosted attempt connected using that embedded
-CA and executed the observer's first bounded read-only metadata query. It then
-returned `ErrDatabaseTLSRequired`: the old observer treated `pg_stat_ssl.ssl`
-(the server/backend-side value) as proof of client TLS, and that value was
-false through this pooler. The query had already confirmed a read-only
-transaction. A successful query under the explicit verified `tls.Config` means
-client-to-pooler TLS was established; it says nothing about the pooler-to-database
-leg. The observer now checks pgx's underlying `*tls.Conn` handshake state
-instead; fresh local PostgreSQL integration and race suites pass after that
-change. The single authorized run did **not** complete its catalog observation
-or report an accepted PostgreSQL-major/schema result, and has not been repeated
-after this correction. No application-table rows, dump, write, or resource
-creation was requested or performed. A further hosted run requires fresh
-authorization.
+The first hosted attempt using the embedded CA connected and executed the first
+bounded read-only query, but returned `ErrDatabaseTLSRequired`: the observer
+mistook `pg_stat_ssl.ssl` (a server/backend-side value) for client TLS, and it
+was false through this pooler. The query had confirmed a read-only transaction.
+After fresh authorization, one corrected run checked pgx's underlying `*tls.Conn`
+handshake and passed: verified client-to-pooler TLS, PostgreSQL major 17,
+read-only transaction, and `public` schema present. The completed bounded
+observation queried metadata only. It establishes no claim about the
+pooler-to-database TLS leg or independent backend identity. No application-table
+rows, dump, write, or resource creation was requested or performed. Further
+hosted access requires separate authorization.
 
 The opt-in `hosted` test `TestHostedReadOnlySupavisorProbe` reads its full
 connection URL only from `SPARC_HOSTED_TEST_URL_FILE`, which must be a private

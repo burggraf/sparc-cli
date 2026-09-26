@@ -1370,11 +1370,13 @@ not prove the client-to-pooler TLS leg. The observer now checks the completed
 pgx `*tls.Conn` handshake; fresh default, hosted-parser, PostgreSQL integration,
 race, and vet checks pass locally.
 
-The read-only setting was confirmed by the observer's error ordering, but this
-was not a completed hosted catalog result: PostgreSQL-major and schema presence
-were not reported as passing, and no second hosted run has occurred.
-No application-table rows, dump, write, project change, or resource creation
-was requested or performed. The single-probe authorization is exhausted; any
-additional hosted query requires fresh authorization. See
+After fresh authorization, one corrected read-only probe passed the
+PostgreSQL 17, verified client-to-pooler TLS, read-only transaction, and
+`public`-schema-present checks. The first run's read-only setting was confirmed
+by error ordering; the corrected run completed the bounded metadata observation.
+Neither run queried application-table rows, dumped data, wrote, changed the
+project, or created resources. No claim is made about the pooler-to-database TLS
+leg or independent backend identity. Further hosted access requires separate
+authorization. See
 [`R03-connectivity.md`](research/R03-connectivity.md) for certificate
 provenance, fingerprint, expiry, and route limits.
