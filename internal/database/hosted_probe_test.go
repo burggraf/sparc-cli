@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,35 +15,32 @@ import (
 )
 
 func TestParseHostedSupavisorSessionURL(t *testing.T) {
-	caFile := filepath.Join(t.TempDir(), "supabase-root.crt")
 	params, password, err := parseHostedSupavisorSessionURL(
 		[]byte("postgresql://postgres."+testProjectRef+":p%40ss%3Aword@aws-1-us-east-2.pooler.supabase.com:5432/postgres?sslmode=require"),
 		testProjectRef,
-		caFile,
 	)
 	if err != nil {
 		t.Fatalf("parseHostedSupavisorSessionURL() = %v", err)
 	}
 	if params.ExpectedProjectRef != testProjectRef || params.Host != "aws-1-us-east-2.pooler.supabase.com" ||
 		params.Port != directPort || params.Database != "postgres" || params.User != "postgres."+testProjectRef ||
-		params.SSLMode != "verify-full" || params.SSLRootCert != caFile || string(password) != "p@ss:word" {
+		params.SSLMode != "verify-full" || params.SSLRootCert != "system" || string(password) != "p@ss:word" {
 		t.Fatalf("parsed connection parameters/password did not match the expected route")
 	}
 }
 
 func TestHostedReadOnlySupavisorProbe(t *testing.T) {
 	urlFile := os.Getenv("SPARC_HOSTED_TEST_URL_FILE")
-	caFile := os.Getenv("SPARC_HOSTED_TEST_CA_FILE")
 	projectRef := os.Getenv("SPARC_HOSTED_TEST_PROJECT_REF")
-	if urlFile == "" || caFile == "" || projectRef == "" {
-		t.Skip("explicit private URL file, CA file, and project ref are required")
+	if urlFile == "" || projectRef == "" {
+		t.Skip("explicit private URL file and project ref are required")
 	}
 	urlBytes, err := credentials.Input(&credentials.Reference{File: urlFile}, nil, nil)
 	if err != nil {
 		t.Fatal("hosted connection input unavailable")
 	}
 	defer clear(urlBytes)
-	params, password, err := parseHostedSupavisorSessionURL(urlBytes, projectRef, caFile)
+	params, password, err := parseHostedSupavisorSessionURL(urlBytes, projectRef)
 	if err != nil {
 		t.Fatal("hosted session route rejected")
 	}
@@ -59,7 +55,7 @@ func TestHostedReadOnlySupavisorProbe(t *testing.T) {
 	t.Log("read-only metadata probe passed: PostgreSQL 17, verified TLS, read-only transaction")
 }
 
-func parseHostedSupavisorSessionURL(raw []byte, expectedProjectRef, caFile string) (ConnectionParams, []byte, error) {
+func parseHostedSupavisorSessionURL(raw []byte, expectedProjectRef string) (ConnectionParams, []byte, error) {
 	if len(raw) == 0 || len(raw) > 16*1024 || string(raw) != strings.TrimSpace(string(raw)) {
 		return ConnectionParams{}, nil, ErrConnectionParameters
 	}
@@ -88,7 +84,7 @@ func parseHostedSupavisorSessionURL(raw []byte, expectedProjectRef, caFile strin
 		Database:           strings.TrimPrefix(parsed.Path, "/"),
 		User:               parsed.User.Username(),
 		SSLMode:            "verify-full",
-		SSLRootCert:        caFile,
+		SSLRootCert:        "system",
 	}
 	if !hasPassword || params.Validate() != nil || credentials.ValidatePGPassEntry(credentials.PGPassEntry{
 		Host: params.Host, Port: params.Port, Database: params.Database, User: params.User, Password: []byte(password),
@@ -99,7 +95,6 @@ func parseHostedSupavisorSessionURL(raw []byte, expectedProjectRef, caFile strin
 }
 
 func TestParseHostedSupavisorSessionURLRejectsUnsafeInputs(t *testing.T) {
-	caFile := filepath.Join(t.TempDir(), "supabase-root.crt")
 	valid := "postgresql://postgres." + testProjectRef + ":secret-canary@aws-1-us-east-2.pooler.supabase.com:5432/postgres"
 	for _, test := range []struct {
 		name, raw, projectRef string
@@ -114,7 +109,7 @@ func TestParseHostedSupavisorSessionURLRejectsUnsafeInputs(t *testing.T) {
 		{"wrong expected ref", valid, "zyxwvutsrqponmlkjihgfedcba"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, _, err := parseHostedSupavisorSessionURL([]byte(test.raw), test.projectRef, caFile); err == nil || strings.Contains(err.Error(), "secret-canary") {
+			if _, _, err := parseHostedSupavisorSessionURL([]byte(test.raw), test.projectRef); err == nil || strings.Contains(err.Error(), "secret-canary") {
 				t.Fatalf("parseHostedSupavisorSessionURL() = %v, want sanitized refusal", err)
 			}
 		})

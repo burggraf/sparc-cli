@@ -270,14 +270,16 @@ wired into the CLI, and no public backup/verify/restore command is enabled.
 The opt-in `hosted` test `TestHostedReadOnlySupavisorProbe` reads its full
 connection URL only from `SPARC_HOSTED_TEST_URL_FILE`, which must be a private
 mode-0600 file outside the repository. It also requires explicit
-`SPARC_HOSTED_TEST_PROJECT_REF` and `SPARC_HOSTED_TEST_CA_FILE` values. It
-accepts only the expected project's `postgres.<ref>` session-pooler URL, forces
-`verify-full` using the supplied CA, and calls `ObserveCatalog` once for
-`public`. The observer uses one 15-second-bounded read-only transaction and
-queries metadata only; it does not fetch table rows, dump, or mutate project
-state. Without all three explicit inputs the hosted probe skips. The separate
-parser tests can run locally without a hosted connection. Do not use a
-repository `.env` or put the connection URL in shell history or chat.
+`SPARC_HOSTED_TEST_PROJECT_REF`. It accepts only the expected project's
+`postgres.<ref>` session-pooler URL, forces `verify-full` using Go's explicit
+`system` trust source, and calls `ObserveCatalog` once for `public`. The
+observer uses one 15-second-bounded read-only transaction and queries metadata
+only; it does not fetch table rows, dump, or mutate project state. If the
+operating system does not trust the pooler certificate, the connection fails
+closed rather than downloading or accepting a replacement CA. Without both
+explicit inputs the hosted probe skips. The separate parser tests can run
+locally without a hosted connection. Do not use a repository `.env` or put the
+connection URL in shell history or chat.
 
 ## Sources reviewed
 
