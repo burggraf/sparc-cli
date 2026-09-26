@@ -100,10 +100,14 @@ func TestValidateConnectionParametersRequiresVerifyFullAndExplicitTrustSource(t 
 			}
 		})
 	}
-	params := validConnectionParams(t)
-	params.SSLRootCert = "system"
-	if err := params.Validate(); err != nil {
-		t.Fatalf("explicit system trust rejected: %v", err)
+	for _, root := range []string{"system", "supabase"} {
+		t.Run(root, func(t *testing.T) {
+			params := validConnectionParams(t)
+			params.SSLRootCert = root
+			if err := params.Validate(); err != nil {
+				t.Fatalf("explicit %s trust rejected: %v", root, err)
+			}
+		})
 	}
 }
 

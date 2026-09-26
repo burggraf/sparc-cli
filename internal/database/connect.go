@@ -114,7 +114,13 @@ func NewConnConfig(params ConnectionParams, password []byte) (*pgx.ConnConfig, e
 
 	query := url.Values{}
 	query.Set("sslmode", params.SSLMode)
-	query.Set("sslrootcert", params.SSLRootCert)
+	rootCert := params.SSLRootCert
+	if rootCert == "supabase" {
+		// pgx needs a recognized root source during parsing; the system pool is
+		// replaced with the embedded Supabase pool before this config is returned.
+		rootCert = "system"
+	}
+	query.Set("sslrootcert", rootCert)
 	query.Set("sslcert", "")
 	query.Set("sslkey", "")
 	query.Set("passfile", "")
@@ -141,6 +147,16 @@ func NewConnConfig(params ConnectionParams, password []byte) (*pgx.ConnConfig, e
 	}
 	if hasAmbientDatabaseConfiguration() {
 		return nil, ErrAmbientConfiguration
+	}
+	if config.TLSConfig == nil {
+		return nil, ErrConnectionParameters
+	}
+	if params.SSLRootCert == "supabase" {
+		roots, ok := supabaseRootCAPool()
+		if !ok {
+			return nil, ErrConnectionParameters
+		}
+		config.TLSConfig.RootCAs = roots
 	}
 	if config.Password != "" || config.Host != params.Host || config.Port != params.Port ||
 		config.Database != params.Database || config.User != params.User || config.TLSConfig == nil ||
@@ -236,7 +252,7 @@ func validText(value string) bool {
 }
 
 func validRootCert(value string) bool {
-	if value == "system" {
+	if value == "system" || value == "supabase" {
 		return true
 	}
 	return len(value) > 0 && len(value) <= maxCAPath && validText(value) && filepath.IsAbs(value) && filepath.Clean(value) == value

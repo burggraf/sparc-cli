@@ -1347,12 +1347,34 @@ builds, Windows AMD64 and Darwin arm64 localdemo package test cross-compiles,
 Windows AMD64 demo-command test cross-compile, full PostgreSQL-tagged database
 suite, and retained-archive CLI verification — passed on macOS arm64. The
 normal build list excludes the developer-only packages. Native Windows runtime
-remains unqualified. The operator has
-offered future Supabase test projects; no hosted project or credential has been
-used or authorized yet.
+remains unqualified. At Task 11 completion, no hosted project or credential had
+been used or authorized; the later separate read-only authorization and probe
+outcome are recorded below.
 
 **Next gate:** a product backup/restore needs a separately approved and
 qualified PostgreSQL client payload plus typed dump/restore streaming in the
 production runner. Its inventory remains empty; no PATH fallback is allowed.
-When hosted testing is ready, request a named disposable source/target, exact
-allowed actions, and time/cost limits before connecting.
+When hosted backup/restore testing is ready, request a named disposable
+source/target and exact allowed actions before connecting.
+
+### Authorized read-only metadata probe follow-up (2026-09-26)
+
+One separately authorized hosted probe connected using the public Supabase Root
+2021 CA embedded for `verify-full`, then ran the first bounded read-only
+metadata query. The system-root attempt had failed at macOS certificate
+validation (`x509: “*.pooler.supabase.com” certificate is not standards
+compliant`). The successful connection/query was still reported as
+`ErrDatabaseTLSRequired` because the observer read the server-side
+`pg_stat_ssl.ssl` value, which was false through this pooler. `pg_stat_ssl` does
+not prove the client-to-pooler TLS leg. The observer now checks the completed
+pgx `*tls.Conn` handshake; fresh default, hosted-parser, PostgreSQL integration,
+race, and vet checks pass locally.
+
+The read-only setting was confirmed by the observer's error ordering, but this
+was not a completed hosted catalog result: PostgreSQL-major and schema presence
+were not reported as passing, and no second hosted run has occurred.
+No application-table rows, dump, write, project change, or resource creation
+was requested or performed. The single-probe authorization is exhausted; any
+additional hosted query requires fresh authorization. See
+[`R03-connectivity.md`](research/R03-connectivity.md) for certificate
+provenance, fingerprint, expiry, and route limits.

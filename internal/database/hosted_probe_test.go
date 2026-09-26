@@ -24,7 +24,7 @@ func TestParseHostedSupavisorSessionURL(t *testing.T) {
 	}
 	if params.ExpectedProjectRef != testProjectRef || params.Host != "aws-1-us-east-2.pooler.supabase.com" ||
 		params.Port != directPort || params.Database != "postgres" || params.User != "postgres."+testProjectRef ||
-		params.SSLMode != "verify-full" || params.SSLRootCert != "system" || string(password) != "p@ss:word" {
+		params.SSLMode != "verify-full" || params.SSLRootCert != "supabase" || string(password) != "p@ss:word" {
 		t.Fatalf("parsed connection parameters/password did not match the expected route")
 	}
 }
@@ -66,8 +66,13 @@ func parseHostedSupavisorSessionURL(raw []byte, expectedProjectRef string) (Conn
 		return ConnectionParams{}, nil, ErrConnectionParameters
 	}
 	query, err := url.ParseQuery(parsed.RawQuery)
-	if err != nil || len(query) > 1 {
+	if err != nil {
 		return ConnectionParams{}, nil, ErrConnectionParameters
+	}
+	for key := range query {
+		if key != "sslmode" {
+			return ConnectionParams{}, nil, ErrConnectionParameters
+		}
 	}
 	if modes, ok := query["sslmode"]; ok && (len(modes) != 1 || modes[0] != "require" && modes[0] != "verify-full") {
 		return ConnectionParams{}, nil, ErrConnectionParameters
@@ -84,9 +89,10 @@ func parseHostedSupavisorSessionURL(raw []byte, expectedProjectRef string) (Conn
 		Database:           strings.TrimPrefix(parsed.Path, "/"),
 		User:               parsed.User.Username(),
 		SSLMode:            "verify-full",
-		SSLRootCert:        "system",
+		SSLRootCert:        "supabase",
 	}
-	if !hasPassword || params.Validate() != nil || credentials.ValidatePGPassEntry(credentials.PGPassEntry{
+	if !hasPassword || ClassifyRoute(expectedProjectRef, params.Host, params.Port) != RouteSessionPooler ||
+		params.Validate() != nil || credentials.ValidatePGPassEntry(credentials.PGPassEntry{
 		Host: params.Host, Port: params.Port, Database: params.Database, User: params.User, Password: []byte(password),
 	}) != nil {
 		return ConnectionParams{}, nil, ErrConnectionParameters

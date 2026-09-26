@@ -1,11 +1,11 @@
 # R03 — PostgreSQL TLS, route, and project identity
 
 **Status: open.** Public PostgreSQL 17, pgx, and Supabase connectivity documentation
-was reviewed on 2026-09-22, and a temporary loopback TLS fixture passed on the
-available macOS machine. This qualifies only a local PostgreSQL/TLS mechanism;
-it is not Supabase connectivity, provider routing, project identity, or production
-client-payload qualification. No Supabase project, credential, or hosted endpoint
-was used.
+was reviewed on 2026-09-22, and temporary loopback TLS fixtures passed on the
+available macOS machine. A later separately authorized hosted probe connected
+and ran a bounded read-only metadata query, but the observer's server-side TLS
+check produced a false negative; no complete hosted observation or backup/restore
+qualification is claimed. See the dated outcome below.
 
 ## Repository-local facts
 
@@ -254,32 +254,62 @@ project identity. They are not production support claims.
 
 | Area | Evidence now available | Still required |
 | --- | --- | --- |
-| pgx TLS | v5.8.0 local `verify-full` over IPv4/IPv6; v5.11.0 durable local fixture passes explicit-CA `verify-full`, wrong-CA, hostname-mismatch, untrusted-system-root, and non-TLS refusal checks | Qualify positive system-root behavior and supported-platform trust provisioning; execute native Windows runtime coverage |
+| pgx TLS | v5.8.0 local `verify-full` over IPv4/IPv6; v5.11.0 durable local fixture passes explicit-CA `verify-full`, wrong-CA, hostname-mismatch, untrusted-system-root, and non-TLS refusal checks; hosted client-to-pooler TLS handshook with the embedded Supabase CA | Retest the corrected observer only with fresh authorization; execute native Windows runtime coverage |
 | libpq TLS | psql 17.9 local `verify-full` positive/negative cases over IPv4/IPv6 | Test the exact selected/signed client payload and supported Windows/macOS runtime behavior |
 | Environment | v5.11.0 builder refuses all `PG*`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` variables; parser key allowlist, explicit route/TLS fields, empty passfile/servicefile/client-cert settings, and fixed runtime params are unit-tested. The durable local fixture ignores poisoned home/app-data passfile/client-cert/root files. | Qualify native-child environment separately; review process-environment mutation assumptions |
 | Route mapping | Unit contract binds session port 5432 to exact `postgres.<expected-ref>`; pgx retains the dashboard host for TLS; official Supavisor docs identify the username suffix as tenant `external_id` | Verify actual project Connect values and credential/tenant routing on an authorized disposable project; no independent backend attestation |
 | Pooler | Public docs distinguish direct/session/transaction routes; local PG17.9 fixture exercises TLS/read-only inspection using the session-host/username shape | Verify actual Supavisor routing on an authorized disposable project; native clients, `pg_dump`, and restore remain unqualified; transaction mode remains refused |
 | Catalog/selection | v5.11.0 durable local read-only transaction observes TLS/version, exact literal schema selectors, bounded extensions/routines, and selected-schema relation, partition, RLS/policy, and trigger-count facts | Expand only reviewed structural/security/dependency inventory; policy/trigger semantics, routine bodies, and dependency closure remain unqualified |
-| Trust policy | Explicit private CA works with local pgx v5.8.0 and v5.11.0 fixtures; v5.11.0 system-root parsing is unit-tested only; `require`/`verify-ca` are insufficient | Choose and test CA/system trust provisioning, rotation, and failure behavior on all supported platforms |
+| Trust policy | Explicit private CA works with local pgx fixtures; bundled public Supabase Root 2021 CA byte-matches the official Supabase CLI copy; `verify-full` is retained | Refresh the embedded CA before its 2031-04-26 expiry or provider rotation; execute native Windows runtime coverage |
 | Version | Durable local fixture reports `server_version_num=170009`; unit gate accepts only major 17 | Add durable wrong-major integration refusal and prove gate before capture/restore |
 
 A fake SQL runner or `httptest` cannot establish PostgreSQL wire-protocol TLS,
 libpq behavior, provider routing, or tenant identity. No database connection is
 wired into the CLI, and no public backup/verify/restore command is enabled.
 
+### Supabase CA and authorized hosted probe (2026-09-26)
+
+The Go system-trust attempt failed on macOS with `x509: “*.pooler.supabase.com”
+certificate is not standards compliant`. A TLS-only diagnostic observed a
+three-certificate peer chain issued by `Supabase Intermediate 2021 CA`; no
+credentials or PostgreSQL startup message were sent in that diagnostic. The
+public Supabase `prod-ca-2021.crt` was fetched from its downloads bucket and
+compared byte-for-byte with the copy in the official Supabase CLI at commit
+`abaa29aba9798da6b766b3bf1038f6d6bd315532`. SHA-256:
+`700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7`.
+The embedded certificate is `Supabase Root 2021 CA`, valid through 2031-04-26.
+`SSLRootCert=supabase` now selects a fresh Go `CertPool` containing only that
+CA; `verify-full`, hostname verification, and no-fallback behavior remain in
+force. This removes the operator's CA-file step for the current Supabase CA,
+but requires SPARC to refresh the public trust anchor before expiry or provider
+rotation. Native libpq payloads are not covered.
+
+The single separately authorized hosted attempt connected using that embedded
+CA and executed the observer's first bounded read-only metadata query. It then
+returned `ErrDatabaseTLSRequired`: the old observer treated `pg_stat_ssl.ssl`
+(the server/backend-side value) as proof of client TLS, and that value was
+false through this pooler. The query had already confirmed a read-only
+transaction. A successful query under the explicit verified `tls.Config` means
+client-to-pooler TLS was established; it says nothing about the pooler-to-database
+leg. The observer now checks pgx's underlying `*tls.Conn` handshake state
+instead; fresh local PostgreSQL integration and race suites pass after that
+change. The single authorized run did **not** complete its catalog observation
+or report an accepted PostgreSQL-major/schema result, and has not been repeated
+after this correction. No application-table rows, dump, write, or resource
+creation was requested or performed. A further hosted run requires fresh
+authorization.
+
 The opt-in `hosted` test `TestHostedReadOnlySupavisorProbe` reads its full
 connection URL only from `SPARC_HOSTED_TEST_URL_FILE`, which must be a private
 mode-0600 file outside the repository. It also requires explicit
 `SPARC_HOSTED_TEST_PROJECT_REF`. It accepts only the expected project's
-`postgres.<ref>` session-pooler URL, forces `verify-full` using Go's explicit
-`system` trust source, and calls `ObserveCatalog` once for `public`. The
-observer uses one 15-second-bounded read-only transaction and queries metadata
-only; it does not fetch table rows, dump, or mutate project state. If the
-operating system does not trust the pooler certificate, the connection fails
-closed rather than downloading or accepting a replacement CA. Without both
-explicit inputs the hosted probe skips. The separate parser tests can run
-locally without a hosted connection. Do not use a repository `.env` or put the
-connection URL in shell history or chat.
+`postgres.<ref>` session-pooler URL, forces `verify-full` using the embedded
+Supabase Root 2021 CA (no user CA download), and calls `ObserveCatalog` once for
+`public`. The observer uses one 15-second-bounded read-only transaction and
+queries metadata only; it does not fetch application-table rows, dump, or
+mutate project state. Without both explicit inputs the hosted probe skips. The
+separate parser tests can run locally without a hosted connection. Do not use a
+repository `.env` or put the connection URL in shell history or chat.
 
 ## Sources reviewed
 
@@ -288,7 +318,7 @@ connection URL in shell history or chat.
   and [environment variables](https://www.postgresql.org/docs/17/libpq-envars.html).
 - pgx: [v5 package docs](https://pkg.go.dev/github.com/jackc/pgx/v5) and
   [v5.11.0 `pgconn/config.go`](https://github.com/jackc/pgx/blob/v5.11.0/pgconn/config.go).
-- Supabase: [connecting to Postgres](https://supabase.com/docs/guides/database/connecting-to-postgres), [tenant/user troubleshooting](https://supabase.com/docs/guides/troubleshooting/tenant-or-user-not-found), and [Supavisor tenant routing](https://supabase.github.io/supavisor/connecting/overview/).
+- Supabase: [connecting to Postgres](https://supabase.com/docs/guides/database/connecting-to-postgres), [SSL enforcement and CA guidance](https://supabase.com/docs/guides/platform/ssl-enforcement), [tenant/user troubleshooting](https://supabase.com/docs/guides/troubleshooting/tenant-or-user-not-found), [Supavisor tenant routing](https://supabase.github.io/supavisor/connecting/overview/), and public [`prod-ca-2021.crt`](https://supabase-downloads.s3-ap-southeast-1.amazonaws.com/prod/ssl/prod-ca-2021.crt) (SHA-256 recorded above; byte-matched against official CLI commit `abaa29a`).
 - [R02](R02-client-provenance.md) remains open for the native-client source,
   license, dependency closure, exact payload, and platform trust behavior.
 

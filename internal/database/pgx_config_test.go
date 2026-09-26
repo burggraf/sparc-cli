@@ -57,6 +57,23 @@ func TestNewConnConfigPreservesVerifiedSessionPoolerRoute(t *testing.T) {
 	}
 }
 
+func TestNewConnConfigUsesBundledSupabaseRoot(t *testing.T) {
+	clearDatabaseEnvironment(t)
+	params := validConnectionParams(t)
+	params.SSLRootCert = "supabase"
+	config, err := NewConnConfig(params, []byte("explicit-password"))
+	if err != nil {
+		t.Fatalf("NewConnConfig() = %v", err)
+	}
+	if config.TLSConfig == nil || config.TLSConfig.ServerName != params.Host || config.TLSConfig.InsecureSkipVerify || config.TLSConfig.RootCAs == nil || len(config.Fallbacks) != 0 {
+		t.Fatal("bundled Supabase trust did not preserve verify-full without fallback")
+	}
+	subjects := config.TLSConfig.RootCAs.Subjects()
+	if len(subjects) != 1 || !strings.Contains(string(subjects[0]), "Supabase Root 2021 CA") {
+		t.Fatalf("unexpected bundled trust subjects: %q", subjects)
+	}
+}
+
 func TestNewConnConfigRejectsAmbientDatabaseAndTrustSettings(t *testing.T) {
 	for _, test := range []struct{ key, value string }{
 		{"PGOPTIONS", "-c search_path=pg_catalog secret-canary"},

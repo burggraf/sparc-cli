@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"time"
 
@@ -144,7 +145,7 @@ type PolicyObservation struct {
 type CatalogObservation struct {
 	ServerVersionNum int
 	ServerMajor      int
-	TLS              bool
+	TLS              bool // client-to-endpoint verified TLS; not a pooler's backend leg.
 	ReadOnly         bool
 	Schemas          []SchemaObservation
 	Extensions       []ExtensionObservation
@@ -194,6 +195,11 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		_ = conn.Close(closeCtx)
 	}()
 
+	tlsActive := false
+	if tlsConn, ok := conn.PgConn().Conn().(*tls.Conn); ok {
+		tlsActive = tlsConn.ConnectionState().HandshakeComplete
+	}
+
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return CatalogObservation{}, contextOr(ctx, ErrCatalogObservation)
@@ -212,15 +218,11 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 	}
 
 	var versionNum int
-	var tlsActive, readOnly bool
+	var readOnly bool
 	if err := tx.QueryRow(ctx, `
 		SELECT pg_catalog.current_setting('server_version_num')::int,
-		       COALESCE((
-			       SELECT ssl FROM pg_catalog.pg_stat_ssl
-			       WHERE pid = pg_catalog.pg_backend_pid()
-		       ), false),
 		       pg_catalog.current_setting('transaction_read_only') = 'on'
-	`).Scan(&versionNum, &tlsActive, &readOnly); err != nil {
+	`).Scan(&versionNum, &readOnly); err != nil {
 		return CatalogObservation{}, contextOr(ctx, ErrCatalogObservation)
 	}
 
