@@ -1506,3 +1506,12 @@ not a formal EOL claim. See [R02](research/R02-client-provenance.md). The
 product owner must choose a minimum-OS policy before we spend roughly 12–15 GB
 on a guest image or make any support claim; payload selection, signing, and
 redistribution remain separate approvals.
+
+### Task 12 read-only probe design (2026-09-26)
+
+Drafted [`2026-09-26-task12-readonly-public-auth-design.md`](plans/2026-09-26-task12-readonly-public-auth-design.md)
+offline. It proposes a bounded PostgreSQL 17 catalog-only observation of
+`public`/`auth`, identifies extra column/FK metadata that needs locally tested
+fixed queries, and explicitly excludes Auth user data, Auth Admin, Auth config,
+all mutations, and project discovery. It is not a hosted authorization or a
+Task 12 qualification result. No hosted endpoint or credential was accessed.
