@@ -304,7 +304,11 @@ func querySQL(ctx context.Context, env []string, psql, connInfo, sql string) (st
 }
 
 func runCommand(ctx context.Context, env []string, executable string, stdin io.Reader, stdout io.Writer, args ...string) error {
-	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
+	return runCommandWithTimeout(ctx, commandTimeout, env, executable, stdin, stdout, args...)
+}
+
+func runCommandWithTimeout(ctx context.Context, timeout time.Duration, env []string, executable string, stdin io.Reader, stdout io.Writer, args ...string) error {
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, executable, args...)
 	cmd.Env = env

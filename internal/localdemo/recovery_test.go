@@ -3,13 +3,24 @@
 package localdemo
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/burggraf/sparc-cli/internal/platform"
 )
+
+func TestRehearseExistingArchiveRejectsInvalidInputBeforeStartingCluster(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("Homebrew restore rehearsal targets macOS arm64")
+	}
+	if err := RehearseExistingArchive(context.Background(), "/opt/homebrew/opt/postgresql@17/bin", filepath.Join(t.TempDir(), "missing"), []byte("wrong")); err != ErrArchive {
+		t.Fatalf("missing archive = %v, want ErrArchive", err)
+	}
+}
 
 func TestPostgresMajorParsesClientOutput(t *testing.T) {
 	for output, want := range map[string]int{

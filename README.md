@@ -32,6 +32,27 @@ ARCHIVE="./backups/database-$(date +%Y%m%d-%H%M%S)"
 
 The command prompts twice for an archive-encryption passphrase without echo unless you add `--passphrase-file .passphrase`. It prints `Database archive created.` and exits **3**, meaning the encrypted archive is intact but deliberately incomplete. Run `./sparc verify --archive "$ARCHIVE"` with the same passphrase to verify it offline. A hosted backup reads database contents and needs the operator's authorization. Remote folders are not supported yet. Run `./sparc licenses` to print the bundled PostgreSQL and OpenSSL notices.
 
+## Rehearse restoring an existing archive locally
+
+Homebrew PostgreSQL 17 server tools can test whether a SPARC database component
+restores on this Mac. The Homebrew service need not be running: this developer-only
+command starts a fresh temporary cluster on a private Unix socket, verifies the
+archive, restores into a new database, checks the catalog is readable, and stops
+and removes the cluster. It does **not** alter an existing PostgreSQL service,
+connect to Supabase, compare the hosted source, or establish full-project coverage.
+A restore executes SQL from the archive as the local OS user; use only an archive
+you trust. Role/extension prerequisites may cause the strict restore to fail.
+
+```sh
+GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off \
+  go run -tags=localdemo ./cmd/sparc-localrestore --archive ./tmp/test
+```
+
+Enter the **existing archive passphrase** when prompted; never put it in the
+command line or chat. The command uses `/opt/homebrew/opt/postgresql@17/bin` and
+requires it to be installed. A passing synthetic test does not mean your archive
+was restored: run the command above on your actual archive to learn that result.
+
 ## Try developer-only backup/restore
 
 `sparc-localdemo` is a separate developer-only build target; it is not linked into normal `sparc` release builds. It creates a fresh temporary PostgreSQL 17 cluster listening only on `127.0.0.1`, creates fixed synthetic source/target databases, streams one schema into a private encrypted archive, deletes the source, and restores/checks rows and sequence state in the fresh target. No database URL is accepted, and no hosted project is contacted. The demo cluster uses trust authentication and TLS off only because it contains synthetic data and is loopback-only; this is not a connection mode for external databases. The encrypted archive remains at the requested path and is declared incomplete.
