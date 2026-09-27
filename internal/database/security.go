@@ -32,7 +32,60 @@ func CheckEmptyTargetV1(observation CatalogObservation, scope EmptyTargetScopeV1
 	if !validEmptyTargetScope(scope) {
 		return ErrTargetSecurityUnknown
 	}
-	return CheckTargetSecurityV1(observation)
+	if err := CheckTargetSecurityV1(observation); err != nil {
+		return err
+	}
+
+	expected := make(map[string]bool, len(scope.RequiredPresent)+len(scope.RequiredAbsent))
+	for _, name := range scope.RequiredPresent {
+		expected[name] = true
+	}
+	for _, name := range scope.RequiredAbsent {
+		expected[name] = false
+	}
+	observed := make(map[string]SchemaObservation, len(expected))
+	counts := make(map[string]int, len(expected))
+	for _, schema := range observation.Schemas {
+		if !validIdentifier(schema.Name) {
+			return ErrTargetSecurityUnknown
+		}
+		if _, wanted := expected[schema.Name]; wanted {
+			observed[schema.Name] = schema
+			counts[schema.Name]++
+		}
+	}
+	for name, present := range expected {
+		schema, count := observed[name], counts[name]
+		if count != 1 {
+			return ErrTargetSecurityUnknown
+		}
+		if schema.Present != present {
+			return ErrUnsafeTargetSecurityProfile
+		}
+	}
+	for _, relation := range observation.Relations {
+		if !validIdentifier(relation.Schema) || !validIdentifier(relation.Name) {
+			return ErrTargetSecurityUnknown
+		}
+		if present, wanted := expected[relation.Schema]; wanted {
+			if present {
+				return ErrUnsafeTargetSecurityProfile
+			}
+			return ErrTargetSecurityUnknown
+		}
+	}
+	for _, routine := range observation.Routines {
+		if !validIdentifier(routine.Schema) || !validIdentifier(routine.Name) {
+			return ErrTargetSecurityUnknown
+		}
+		if present, wanted := expected[routine.Schema]; wanted {
+			if present {
+				return ErrUnsafeTargetSecurityProfile
+			}
+			return ErrTargetSecurityUnknown
+		}
+	}
+	return nil
 }
 
 func validEmptyTargetScope(scope EmptyTargetScopeV1) bool {

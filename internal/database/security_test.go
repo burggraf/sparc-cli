@@ -67,6 +67,78 @@ func TestCheckEmptyTargetV1RefusesInvalidScope(t *testing.T) {
 	}
 }
 
+func TestCheckEmptyTargetV1RejectsObservedApplicationState(t *testing.T) {
+	scope := EmptyTargetScopeV1{RequiredPresent: []string{"public"}, RequiredAbsent: []string{"app"}}
+	base := CatalogObservation{
+		ServerMajor: supportedPostgresMajor,
+		TLS:         true,
+		ReadOnly:    true,
+		Schemas: []SchemaObservation{
+			{Name: "public", Present: true},
+			{Name: "app", Present: false},
+		},
+		Security: SecurityObservation{Observed: true},
+	}
+	for name, observation := range map[string]CatalogObservation{
+		"missing required schema": func() CatalogObservation { o := base; o.Schemas[0].Present = false; return o }(),
+		"present custom schema":   func() CatalogObservation { o := base; o.Schemas[1].Present = true; return o }(),
+		"public relation": func() CatalogObservation {
+			o := base
+			o.Relations = []RelationObservation{{Schema: "public", Name: "profiles"}}
+			return o
+		}(),
+		"public routine": func() CatalogObservation {
+			o := base
+			o.Routines = []RoutineObservation{{Schema: "public", Name: "current_user"}}
+			return o
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := CheckEmptyTargetV1(observation, scope); !errors.Is(err, ErrUnsafeTargetSecurityProfile) {
+				t.Fatalf("nonempty target error = %v, want unsafe-profile refusal", err)
+			}
+		})
+	}
+}
+
+func TestCheckEmptyTargetV1RefusesMalformedObservation(t *testing.T) {
+	scope := EmptyTargetScopeV1{RequiredPresent: []string{"public"}, RequiredAbsent: []string{"app"}}
+	base := CatalogObservation{
+		ServerMajor: supportedPostgresMajor,
+		TLS:         true,
+		ReadOnly:    true,
+		Schemas: []SchemaObservation{
+			{Name: "public", Present: true},
+			{Name: "app", Present: false},
+		},
+		Security: SecurityObservation{Observed: true},
+	}
+	for name, observation := range map[string]CatalogObservation{
+		"missing app observation": func() CatalogObservation { o := base; o.Schemas = o.Schemas[:1]; return o }(),
+		"duplicate public observation": func() CatalogObservation {
+			o := base
+			o.Schemas = append(o.Schemas, SchemaObservation{Name: "public", Present: true})
+			return o
+		}(),
+		"invalid relation identity": func() CatalogObservation {
+			o := base
+			o.Relations = []RelationObservation{{Schema: "public\n", Name: "profiles"}}
+			return o
+		}(),
+		"invalid routine identity": func() CatalogObservation {
+			o := base
+			o.Routines = []RoutineObservation{{Schema: "public", Name: "current\nuser"}}
+			return o
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := CheckEmptyTargetV1(observation, scope); !errors.Is(err, ErrTargetSecurityUnknown) {
+				t.Fatalf("malformed observation error = %v, want unknown-profile refusal", err)
+			}
+		})
+	}
+}
+
 func TestCheckTargetSecurityV1RejectsPublicSelect(t *testing.T) {
 	base := CatalogObservation{
 		ServerMajor: supportedPostgresMajor,
