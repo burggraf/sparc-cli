@@ -1334,9 +1334,20 @@ owners/SECURITY DEFINER flags, and view security-invoker/barrier options. The
 new regression runs alongside the full default, hosted-parser, PostgreSQL
 integration and race suites, vet, and Windows AMD64 integration cross-compile.
 It remains catalog evidence only; no expected target profile or restore gate
-exists. The separately authorized R03 hosted metadata probe is not a permission
-baseline; broader hosted/public/Auth qualification still requires exact scoped
-authorization under Task 12.
+exists. A new local-only `CheckEmptyTargetV1` is deliberately not a Supabase
+baseline: it accepts only a caller-declared application scope where required
+schemas (initially `public`) are present with no relations/routines and requested
+custom schemas are absent, while retaining the narrow `PUBLIC SELECT` refusal.
+It ignores objects outside that scope as possible provider-managed baseline
+state and refuses malformed/missing scope facts. Focused scope tests were RED
+for the missing API, then for missing/present schemas and public
+relations/routines; they are GREEN after the minimal comparator. A disposable
+TLS PostgreSQL 17 test accepts fresh `public` plus absent `sparc_app`, then
+refuses after a synthetic `public` table is added; relation-count and row-marker
+probes show both observations were read-only. This is not Supabase baseline,
+restore, or hosted qualification. The separately authorized R03 hosted metadata
+probe is not a permission baseline; broader hosted/public/Auth qualification
+still requires exact scoped authorization under Task 12.
 
 ## Task 11 — Developer-only backup/restore rehearsal and offline CLI verify
 

@@ -26,6 +26,18 @@
 
 `ObserveCatalog` reports selected relation owner names and bounded relation/column ACL facts, explicit global and selected-schema `pg_default_acl` entries, cluster-wide role attributes, membership edges with PG17 grantor/admin/inherit/set options, and selected-schema policy names, commands, permissive/restrictive flags, role identities and expression-*presence* flags. Catalog role OIDs are resolved to names; `PUBLIC` pseudo-principals carry an explicit boolean because a quoted role named `"PUBLIC"` is distinct. It does not query `pg_authid`, password hashes, role settings, or policy expression trees. This first guard does **not** compare owner, ACL, default, role, membership or policy facts to an expected profile. It also does not evaluate grants to named Supabase roles such as `anon`, `authenticated`, or `service_role`; membership consequences, policy predicates, security-definer bodies, application collisions, target identity, or changes after observation. A pass means only “no observed `PUBLIC SELECT` in this narrow scope,” not “safe target,” “permission-equivalent,” or restore-ready. No restore command calls this guard.
 
+`CheckEmptyTargetV1` is a separate local-only target-state prerequisite. A
+caller declares schemas that must be present and empty (initially `public`) and
+custom application schemas that must be absent. It requires an existing
+PostgreSQL 17, TLS-verified, read-only catalog observation plus the narrow
+`PUBLIC SELECT` check. It refuses a missing required schema, present absent
+schema, or relation/routine in a required-present schema; malformed or missing
+scope facts refuse as unknown. It deliberately ignores objects outside the
+declared application scope because they may be provider-managed baseline state.
+It does not model Supabase owners, managed roles, Auth, Storage, Functions, or a
+universal newly-created-project baseline. A pass is not restore authorization
+or hosted qualification.
+
 ## Task 10 implementation constraints
 
 1. Define an independently reviewed expected destination profile. Never copy observed source permissions and call them safe; source state may already expose data.
@@ -48,7 +60,17 @@ The direct-grant test grants `SELECT` on one public table to `PUBLIC`, observes 
 
 - A local PG17.9 case now proves default-deny for a granted reader with no policy, owner bypass before `FORCE ROW LEVEL SECURITY`, forced owner denial, a named-reader permissive/restrictive-policy combination, and a `BYPASSRLS` role reading both synthetic rows. It distinguishes unquoted `PUBLIC` from a quoted `"PUBLIC"` role in policy/ACL observations, and records policy command and expression presence without collecting predicates. This does not prove policies equivalent across projects or justify bypassing RLS on restore.
 - **2026-09-26 local evidence:** `TestObserveCatalogReportsOwnershipAndViewSecurityMetadata` on disposable PostgreSQL 17 observes the current database owner, selected-schema owners, routine owner plus `SECURITY DEFINER` flag, and view `security_invoker`/`security_barrier` options. It does not collect routine/view definitions or prove their effects. Full default and hosted-parser suites, PostgreSQL integration and race suites, vet, and Windows AMD64 integration-test cross-compilation passed; all are local evidence.
-- The next step is to define an independently reviewed expected destination profile rather than accepting source state. Do not treat the current guard as complete; wire it to a restore gate only when a real restore pipeline exists.
+- **2026-09-26 empty-target evidence:** `TestEmptyTargetPreflightOnDisposablePostgres`
+  observed a fresh TLS PostgreSQL 17 fixture with `public` required present and
+  `sparc_app` required absent, and `CheckEmptyTargetV1` accepted it. After the
+  test seeded one `public` marker table, a second read-only observation was
+  refused. Relation-count/marker probes before and after each observation
+  remained unchanged. Focused scope tests first failed to compile before the
+  new scope API and then failed for missing/present schemas and public
+  relations/routines until the comparator was added. This is synthetic local
+  evidence only; it does not establish a Supabase baseline or restore behavior.
+- Do not treat either current guard as complete; wire a preflight to a restore
+  gate only when a real restore pipeline exists.
 - The separately authorized R03 hosted metadata observation is not a permission baseline, target profile, or restore qualification. No native client payload or restore command is authorized by this record.
 
 ## Sources

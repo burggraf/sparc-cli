@@ -120,6 +120,53 @@ func TestObserveCatalogRejectsDirectPublicRelationSelect(t *testing.T) {
 	}
 }
 
+func TestEmptyTargetPreflightOnDisposablePostgres(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal("unable to connect to local fixture as administrator")
+	}
+	defer admin.Close(ctx)
+
+	var relationCountBefore, relationCountAfter int
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM pg_catalog.pg_class WHERE relnamespace = 'public'::pg_catalog.regnamespace`).Scan(&relationCountBefore); err != nil {
+		t.Fatal("unable to count initial public relations")
+	}
+	scope := EmptyTargetScopeV1{RequiredPresent: []string{"public"}, RequiredAbsent: []string{"sparc_app"}}
+	observation, err := observeCatalog(ctx, fixture.config(t, fixture.caPath), []string{"public", "sparc_app"})
+	if err != nil {
+		t.Fatalf("observe empty target: %v", err)
+	}
+	if err := CheckEmptyTargetV1(observation, scope); err != nil {
+		t.Fatalf("empty target preflight: %v", err)
+	}
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM pg_catalog.pg_class WHERE relnamespace = 'public'::pg_catalog.regnamespace`).Scan(&relationCountAfter); err != nil || relationCountAfter != relationCountBefore {
+		t.Fatalf("read-only empty observation changed public relation count: before=%d after=%d err=%v", relationCountBefore, relationCountAfter, err)
+	}
+
+	if _, err := admin.Exec(ctx, "CREATE TABLE public.sparc_target_marker (value text NOT NULL)"); err != nil {
+		t.Fatal("unable to seed target marker")
+	}
+	if _, err := admin.Exec(ctx, "INSERT INTO public.sparc_target_marker VALUES ('synthetic-target-marker')"); err != nil {
+		t.Fatal("unable to insert target marker")
+	}
+	var markerBefore, markerAfter string
+	if err := admin.QueryRow(ctx, "SELECT value FROM public.sparc_target_marker").Scan(&markerBefore); err != nil {
+		t.Fatal("unable to read target marker before observation")
+	}
+	observation, err = observeCatalog(ctx, fixture.config(t, fixture.caPath), []string{"public", "sparc_app"})
+	if err != nil {
+		t.Fatalf("observe nonempty target: %v", err)
+	}
+	if err := CheckEmptyTargetV1(observation, scope); !errors.Is(err, ErrUnsafeTargetSecurityProfile) {
+		t.Fatalf("nonempty target preflight = %v, want unsafe-target refusal", err)
+	}
+	if err := admin.QueryRow(ctx, "SELECT value FROM public.sparc_target_marker").Scan(&markerAfter); err != nil || markerAfter != markerBefore {
+		t.Fatalf("read-only nonempty observation changed target marker: before=%q after=%q err=%v", markerBefore, markerAfter, err)
+	}
+}
+
 func TestObserveCatalogViaSessionPoolerShapeUsesTLSAndReadOnlyTransaction(t *testing.T) {
 	fixture := newPostgresFixture(t)
 	ctx := context.Background()
