@@ -30,9 +30,10 @@
 caller declares schemas that must be present and empty (initially `public`) and
 custom application schemas that must be absent. It requires an existing
 PostgreSQL 17, TLS-verified, read-only catalog observation plus the narrow
-`PUBLIC SELECT` check. It refuses a missing required schema, present absent
-schema, or relation/routine in a required-present schema; malformed or missing
-scope facts refuse as unknown. It deliberately ignores objects outside the
+`PUBLIC SELECT` check. Its combined declared scope is capped at the observer's
+256-schema bound. It refuses a missing required schema, present absent schema,
+or relation/routine in a required-present schema; malformed or missing scope
+facts refuse as unknown. It deliberately ignores objects outside the
 declared application scope because they may be provider-managed baseline state.
 It does not model Supabase owners, managed roles, Auth, Storage, Functions, or a
 universal newly-created-project baseline. A pass is not restore authorization

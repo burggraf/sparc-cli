@@ -2,6 +2,7 @@ package database
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -64,6 +65,25 @@ func TestCheckEmptyTargetV1RefusesInvalidScope(t *testing.T) {
 				t.Fatalf("invalid scope error = %v, want unknown-profile refusal", err)
 			}
 		})
+	}
+}
+
+func TestCheckEmptyTargetV1RefusesOversizedScope(t *testing.T) {
+	scope := EmptyTargetScopeV1{RequiredPresent: make([]string, maxSchemaSelections+1)}
+	observation := CatalogObservation{
+		ServerMajor: supportedPostgresMajor,
+		TLS:         true,
+		ReadOnly:    true,
+		Schemas:     make([]SchemaObservation, len(scope.RequiredPresent)),
+		Security:    SecurityObservation{Observed: true},
+	}
+	for i := range scope.RequiredPresent {
+		name := fmt.Sprintf("schema%d", i)
+		scope.RequiredPresent[i] = name
+		observation.Schemas[i] = SchemaObservation{Name: name, Present: true}
+	}
+	if err := CheckEmptyTargetV1(observation, scope); !errors.Is(err, ErrTargetSecurityUnknown) {
+		t.Fatalf("oversized scope error = %v, want unknown-profile refusal", err)
 	}
 }
 

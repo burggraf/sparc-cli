@@ -89,7 +89,7 @@ func CheckEmptyTargetV1(observation CatalogObservation, scope EmptyTargetScopeV1
 }
 
 func validEmptyTargetScope(scope EmptyTargetScopeV1) bool {
-	if len(scope.RequiredPresent) == 0 {
+	if len(scope.RequiredPresent) == 0 || len(scope.RequiredPresent) > maxSchemaSelections || len(scope.RequiredAbsent) > maxSchemaSelections-len(scope.RequiredPresent) {
 		return false
 	}
 	seen := make(map[string]struct{}, len(scope.RequiredPresent)+len(scope.RequiredAbsent))
