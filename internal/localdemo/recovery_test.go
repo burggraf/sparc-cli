@@ -3,6 +3,7 @@
 package localdemo
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -19,6 +20,20 @@ func TestRehearseExistingArchiveRejectsInvalidInputBeforeStartingCluster(t *test
 	}
 	if err := RehearseExistingArchive(context.Background(), "/opt/homebrew/opt/postgresql@17/bin", filepath.Join(t.TempDir(), "missing"), []byte("wrong")); err != ErrArchive {
 		t.Fatalf("missing archive = %v, want ErrArchive", err)
+	}
+}
+
+func TestRestoreDiagnosticsRequiresOptInAndBoundsOutput(t *testing.T) {
+	const secret = "sensitive-sql-canary"
+	var defaultDiagnostics restoreDiagnostics
+	if n, err := defaultDiagnostics.Write([]byte(secret)); n != len(secret) || err != nil || defaultDiagnostics.output.Len() != len(secret) || defaultDiagnostics.localOutput != nil {
+		t.Fatalf("default diagnostics failed to keep output private: n=%d err=%v", n, err)
+	}
+	var terminal bytes.Buffer
+	diagnostics := restoreDiagnostics{localOutput: &terminal}
+	payload := bytes.Repeat([]byte("x"), maxRestoreDiagnosticBytes+10)
+	if n, err := diagnostics.Write(payload); n != len(payload) || err != nil || diagnostics.output.Len() != maxRestoreDiagnosticBytes || terminal.Len() != maxRestoreDiagnosticBytes {
+		t.Fatalf("diagnostics not bounded: n=%d err=%v captured=%d terminal=%d", n, err, diagnostics.output.Len(), terminal.Len())
 	}
 }
 

@@ -3,6 +3,7 @@
 package localdemo
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -23,11 +24,44 @@ var (
 	ErrRestoreMissingExtension = errors.New("restore requires unavailable extensions")
 	ErrRestorePermission       = errors.New("restore was denied by PostgreSQL permissions")
 	ErrRestoreConflict         = errors.New("restore encountered conflicting objects")
+	ErrRestoreCatalog          = errors.New("restored catalog query failed")
 )
 
 // RehearseExistingArchive restores one verified database component into its own
 // disposable PostgreSQL 17 cluster. No existing cluster or hosted source is used.
-func RehearseExistingArchive(ctx context.Context, binDir, archivePath string, passphrase []byte) (retErr error) {
+func RehearseExistingArchive(ctx context.Context, binDir, archivePath string, passphrase []byte) error {
+	return rehearseExistingArchive(ctx, binDir, archivePath, passphrase, nil)
+}
+
+// RehearseExistingArchiveWithDiagnostics shows up to 64 KiB of raw pg_restore
+// stderr on the caller's local terminal. It may contain SQL or object names.
+func RehearseExistingArchiveWithDiagnostics(ctx context.Context, binDir, archivePath string, passphrase []byte, localOutput io.Writer) error {
+	if localOutput == nil {
+		return ErrRestore
+	}
+	return rehearseExistingArchive(ctx, binDir, archivePath, passphrase, localOutput)
+}
+
+const maxRestoreDiagnosticBytes = 64 << 10
+
+type restoreDiagnostics struct {
+	output      bytes.Buffer
+	localOutput io.Writer
+}
+
+func (d *restoreDiagnostics) Write(data []byte) (int, error) {
+	remaining := maxRestoreDiagnosticBytes - d.output.Len()
+	if remaining > 0 {
+		part := data[:min(remaining, len(data))]
+		_, _ = d.output.Write(part)
+		if d.localOutput != nil {
+			_, _ = d.localOutput.Write(part)
+		}
+	}
+	return len(data), nil
+}
+
+func rehearseExistingArchive(ctx context.Context, binDir, archivePath string, passphrase []byte, localOutput io.Writer) (retErr error) {
 	if ctx == nil || len(passphrase) == 0 {
 		return ErrArchive
 	}
@@ -111,18 +145,24 @@ func RehearseExistingArchive(ctx context.Context, binDir, archivePath string, pa
 	}
 	// A PostgreSQL restore executes the archive's SQL as the disposable server's
 	// user. Do not point this rehearsal at an untrusted archive.
-	var restoreStderr boundedBuffer
-	restoreErr := runCommandWithTimeout(ctx, 5*time.Minute, env, tools.pgrestore, plaintext, &restoreStderr,
+	restoreStderr := &restoreDiagnostics{localOutput: localOutput}
+	defer func() {
+		captured := restoreStderr.output.Bytes()
+		for i := range captured {
+			captured[i] = 0
+		}
+	}()
+	restoreErr := runCommandWithStderr(ctx, 5*time.Minute, env, tools.pgrestore, plaintext, io.Discard, restoreStderr,
 		"--single-transaction", "--exit-on-error", "--no-password", "--dbname", connInfo)
 	if ciphertext.Close() != nil {
 		return ErrRestore
 	}
 	if restoreErr != nil {
-		return classifyRestoreFailure(restoreStderr.Bytes())
+		return classifyRestoreFailure(restoreStderr.output.Bytes())
 	}
 	if _, err := querySQL(ctx, env, tools.psql, connInfo,
 		"SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema'"); err != nil {
-		return ErrRestore
+		return ErrRestoreCatalog
 	}
 	return nil
 }

@@ -8,6 +8,14 @@ import (
 	"testing"
 )
 
+func TestLocalRestoreRawDiagnosticsRequireTerminalBeforeReadingArchive(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--archive", "missing", "--show-postgres-error"}, nil, &stdout, &stderr)
+	if code != 2 || stdout.Len() != 0 || stderr.String() != "sparc-localrestore: raw PostgreSQL diagnostics require terminal stderr\n" {
+		t.Fatalf("raw diagnostics = %d, %q", code, stderr.String())
+	}
+}
+
 func TestLocalRestoreHelpAndMissingArchiveDoNotStartPostgres(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--help"}, nil, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "NEW temporary PostgreSQL 17") || stderr.Len() != 0 {

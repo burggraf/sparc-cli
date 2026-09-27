@@ -308,13 +308,17 @@ func runCommand(ctx context.Context, env []string, executable string, stdin io.R
 }
 
 func runCommandWithTimeout(ctx context.Context, timeout time.Duration, env []string, executable string, stdin io.Reader, stdout io.Writer, args ...string) error {
+	return runCommandWithStderr(ctx, timeout, env, executable, stdin, stdout, io.Discard, args...)
+}
+
+func runCommandWithStderr(ctx context.Context, timeout time.Duration, env []string, executable string, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, executable, args...)
 	cmd.Env = env
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
-	cmd.Stderr = io.Discard
+	cmd.Stderr = stderr
 	cmd.WaitDelay = 2 * time.Second
 	return cmd.Run()
 }
