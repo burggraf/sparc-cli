@@ -28,6 +28,45 @@ func TestCheckTargetSecurityV1RefusesIncompleteObservations(t *testing.T) {
 	}
 }
 
+func TestCheckEmptyTargetV1AcceptsEmptyDeclaredScope(t *testing.T) {
+	observation := CatalogObservation{
+		ServerMajor: supportedPostgresMajor,
+		TLS:         true,
+		ReadOnly:    true,
+		Schemas: []SchemaObservation{
+			{Name: "public", Present: true},
+			{Name: "app", Present: false},
+		},
+		Security: SecurityObservation{Observed: true},
+	}
+	scope := EmptyTargetScopeV1{RequiredPresent: []string{"public"}, RequiredAbsent: []string{"app"}}
+	if err := CheckEmptyTargetV1(observation, scope); err != nil {
+		t.Fatalf("empty scope = %v", err)
+	}
+}
+
+func TestCheckEmptyTargetV1RefusesInvalidScope(t *testing.T) {
+	observation := CatalogObservation{
+		ServerMajor: supportedPostgresMajor,
+		TLS:         true,
+		ReadOnly:    true,
+		Schemas:     []SchemaObservation{{Name: "public", Present: true}},
+		Security:    SecurityObservation{Observed: true},
+	}
+	for name, scope := range map[string]EmptyTargetScopeV1{
+		"missing required present schema": {},
+		"duplicate schema":                {RequiredPresent: []string{"public", "public"}},
+		"overlapping schema":              {RequiredPresent: []string{"public"}, RequiredAbsent: []string{"public"}},
+		"control character":               {RequiredPresent: []string{"public\n"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := CheckEmptyTargetV1(observation, scope); !errors.Is(err, ErrTargetSecurityUnknown) {
+				t.Fatalf("invalid scope error = %v, want unknown-profile refusal", err)
+			}
+		})
+	}
+}
+
 func TestCheckTargetSecurityV1RejectsPublicSelect(t *testing.T) {
 	base := CatalogObservation{
 		ServerMajor: supportedPostgresMajor,

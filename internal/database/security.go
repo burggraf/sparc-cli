@@ -19,6 +19,41 @@ type SecurityObservation struct {
 	PublicSelectColumns  bool
 }
 
+// EmptyTargetScopeV1 names application schemas which must respectively exist
+// empty or be absent. It does not describe provider-managed baseline state.
+type EmptyTargetScopeV1 struct {
+	RequiredPresent []string
+	RequiredAbsent  []string
+}
+
+// CheckEmptyTargetV1 validates the declared scope and existing narrow security
+// gate. It is read-only and not restore authorization.
+func CheckEmptyTargetV1(observation CatalogObservation, scope EmptyTargetScopeV1) error {
+	if !validEmptyTargetScope(scope) {
+		return ErrTargetSecurityUnknown
+	}
+	return CheckTargetSecurityV1(observation)
+}
+
+func validEmptyTargetScope(scope EmptyTargetScopeV1) bool {
+	if len(scope.RequiredPresent) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(scope.RequiredPresent)+len(scope.RequiredAbsent))
+	for _, names := range [][]string{scope.RequiredPresent, scope.RequiredAbsent} {
+		for _, name := range names {
+			if !validIdentifier(name) {
+				return false
+			}
+			if _, exists := seen[name]; exists {
+				return false
+			}
+			seen[name] = struct{}{}
+		}
+	}
+	return true
+}
+
 // CheckTargetSecurityV1 is a deliberately conservative first gate, not a
 // complete Supabase permission baseline. It rejects PUBLIC SELECT on selected
 // row-bearing objects or their future table defaults. A nil result is not
