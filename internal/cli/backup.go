@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/subtle"
 	"flag"
 	"fmt"
 	"io"
@@ -19,8 +20,8 @@ Creates an encrypted local database archive using the PostgreSQL 17 client
 bundled in the macOS arm64 application. No separate PostgreSQL installation is
 required. Relative paths are resolved from the current directory. FILE must be
 readable; DIR must be new beneath an existing writable local directory. The
-database URL is read only from FILE; it is never accepted in argv. The archive
-is marked incomplete:
+database URL is read only from FILE; it is never accepted in argv. A prompted
+archive passphrase must be entered twice. The archive is marked incomplete:
 Auth, Storage, project configuration, roles, and provider-managed services are
 not included.
 `
@@ -99,6 +100,18 @@ func runBackupWith(args []string, stdin io.Reader, stdout, stderr io.Writer, ops
 		return 2
 	}
 	defer clearBytes(passphrase)
+	if passphraseReference == nil {
+		confirmation, err := ops.input(nil, stdinFile, stderr)
+		if err != nil {
+			fmt.Fprint(stderr, "sparc: unable to read passphrase\n")
+			return 2
+		}
+		defer clearBytes(confirmation)
+		if subtle.ConstantTimeCompare(passphrase, confirmation) != 1 {
+			fmt.Fprint(stderr, "sparc: archive passphrases do not match\n")
+			return 2
+		}
+	}
 	if _, err := ops.capture(context.Background(), database.CaptureRequest{
 		Source: source, SourcePassword: password, ArchivePath: archiveDir, ArchivePassphrase: string(passphrase),
 	}); err != nil {

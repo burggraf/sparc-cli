@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +85,35 @@ func TestRunBackupResolvesRelativePaths(t *testing.T) {
 	}
 	if got.ArchivePath != filepath.Join(workingDir, "tmp", "test") {
 		t.Fatalf("archive path = %q", got.ArchivePath)
+	}
+}
+
+func TestRunBackupRejectsMismatchedPromptedPassphrasesBeforeCapture(t *testing.T) {
+	calls, captured := 0, false
+	ops := backupOps{
+		input: func(_ *credentials.Reference, _ *os.File, _ io.Writer) ([]byte, error) {
+			calls++
+			switch calls {
+			case 1:
+				return []byte("postgresql://postgres.abcdefghijklmnopqrst:db-password-canary@aws-1-us-east-2.pooler.supabase.com:5432/postgres"), nil
+			case 2:
+				return []byte("first archive passphrase"), nil
+			case 3:
+				return []byte("second archive passphrase"), nil
+			default:
+				return nil, credentials.ErrInput
+			}
+		},
+		parse: database.ParseSupavisorSessionURL,
+		capture: func(context.Context, database.CaptureRequest) (archive.Manifest, error) {
+			captured = true
+			return archive.Manifest{}, nil
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	code := runBackupWith([]string{"--project-ref", "abcdefghijklmnopqrst", "--database-url-file", "/private/database-url", "--archive", "/private/archive"}, strings.NewReader(""), &stdout, &stderr, ops)
+	if code != 2 || stdout.Len() != 0 || stderr.String() != "sparc: archive passphrases do not match\n" || captured || calls != 3 {
+		t.Fatalf("backup = code %d, stdout %q, stderr %q, captured=%t calls=%d", code, stdout.String(), stderr.String(), captured, calls)
 	}
 }
 
