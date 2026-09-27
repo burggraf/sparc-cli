@@ -21,7 +21,9 @@ const (
 	maxComponents    = 100_000
 	maxManifestDepth = 8
 	maxScopeBytes    = 4096
-	maxTotalBytes    = 128 << 30
+	// MaxComponentBytes is the largest supported plaintext component.
+	MaxComponentBytes int64 = 128 << 30
+	maxTotalBytes           = MaxComponentBytes
 )
 
 type Manifest struct {

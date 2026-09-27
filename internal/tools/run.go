@@ -1,9 +1,12 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"io"
 	"os"
@@ -21,6 +24,8 @@ const (
 	operationDirectory = "operations-v1"
 	runBufferBytes     = 32 * 1024
 	maxCleanupTimeout  = 5 * time.Second
+	maxRootCertBytes   = 1 << 20
+	maxStreamBytes     = uint64(128 << 30)
 )
 
 var ErrRun = errors.New("tool run failed")
@@ -34,20 +39,38 @@ type OutputSink interface {
 	CloseContext(context.Context) error
 }
 
+// AbortableOutputSink can invalidate a streaming destination when its producer
+// fails after writing a prefix.
+type AbortableOutputSink interface {
+	OutputSink
+	AbortContext(context.Context) error
+}
+
 // PGConnection is the only accepted connection input for a PostgreSQL client.
 type PGConnection struct {
 	Host, User, Database string
 	Port                 uint16
 	Password             []byte
+	RootCertPEM          []byte
 }
 
-// RunRequest permits a typed version invocation or a typed PostgreSQL
-// connection. It accepts no free-form client arguments, SQL, stdin, cwd, or
-// environment.
+type RunMode uint8
+
+const (
+	ModeVersion RunMode = iota + 1
+	ModeDump
+	ModeRestore
+)
+
+// RunRequest accepts only a fixed version, dump, or restore operation. It has
+// no free-form arguments, SQL, executable path, cwd, or environment.
 type RunRequest struct {
 	Tool                     Tool
-	Version                  bool
+	Mode                     RunMode
 	Connection               *PGConnection
+	testHostAddr             string
+	Input                    io.ReadCloser
+	InputLimit               uint64
 	Timeout, CleanupTimeout  time.Duration
 	StdoutLimit, StderrLimit uint64
 	Stdout                   OutputSink
@@ -106,10 +129,10 @@ func defaultRunOps() runOps {
 // Run locates only a compiled-in trusted payload. Production inventory is
 // currently empty, so it returns ErrPayloadUnavailable until payload approval.
 func Run(ctx context.Context, request RunRequest) (RunResult, error) {
-	if ctx == nil || !validRunRequest(request) {
+	if ctx == nil || request.testHostAddr != "" || !validRunRequest(request) {
 		return RunResult{}, ErrRun
 	}
-	return withRunSink(request, func(sink *runSink) (RunResult, error) {
+	return withRunSink(request, func(request RunRequest, sink *runSink) (RunResult, error) {
 		target := payloadTarget{OS: runtime.GOOS, Architecture: runtime.GOARCH}
 		manifest, err := lookupProductionPayload(request.Tool, supportedPostgreSQLMajor, target)
 		if err != nil {
@@ -131,17 +154,26 @@ func runWith(ctx context.Context, request RunRequest, manifest packageManifest, 
 	if ctx == nil || !validRunRequest(request) {
 		return RunResult{}, ErrRun
 	}
-	return withRunSink(request, func(sink *runSink) (RunResult, error) {
+	return withRunSink(request, func(request RunRequest, sink *runSink) (RunResult, error) {
 		return runWithSink(ctx, request, sink, manifest, packagePath, cacheRoot, ops)
 	})
 }
 
-func withRunSink(request RunRequest, run func(*runSink) (RunResult, error)) (result RunResult, resultErr error) {
+func withRunSink(request RunRequest, run func(RunRequest, *runSink) (RunResult, error)) (result RunResult, resultErr error) {
+	if request.Mode == ModeRestore {
+		request.Input = &runInput{ReadCloser: request.Input}
+	}
 	sink := newRunSink(request.Stdout)
 	defer func() {
+		if request.Input != nil && request.Input.Close() != nil {
+			result = RunResult{}
+			if resultErr != ErrOutput {
+				resultErr = ErrRun
+			}
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), request.CleanupTimeout)
 		defer cancel()
-		if sink.close(cleanupCtx) != nil {
+		if sink.finish(cleanupCtx, resultErr) != nil {
 			result = RunResult{}
 			if resultErr != ErrRun {
 				resultErr = ErrOutput
@@ -152,7 +184,7 @@ func withRunSink(request RunRequest, run func(*runSink) (RunResult, error)) (res
 			resultErr = ErrRun
 		}
 	}()
-	return run(sink)
+	return run(request, sink)
 }
 
 func runWithSink(ctx context.Context, request RunRequest, sink *runSink, manifest packageManifest, packagePath, cacheRoot string, ops runOps) (result RunResult, resultErr error) {
@@ -187,13 +219,18 @@ func runWithSink(ctx context.Context, request RunRequest, sink *runSink, manifes
 	if ops.prepare != nil && ops.prepare(operation) != nil || runCtx.Err() != nil {
 		return RunResult{}, ErrRun
 	}
+	rootCertPath := ""
 	if request.Connection != nil {
 		passfile, err = ops.newPassfile(operation, credentials.PGPassEntry{Host: request.Connection.Host, Port: request.Connection.Port, Database: request.Connection.Database, User: request.Connection.User, Password: request.Connection.Password})
 		if err != nil {
 			return RunResult{}, ErrRun
 		}
+		rootCertPath = filepath.Join(operation, "root.crt")
+		if platform.WritePrivateFile(rootCertPath, request.Connection.RootCertPEM) != nil {
+			return RunResult{}, ErrRun
+		}
 	}
-	return executeRun(runCtx, cancel, request, sink, path, operation, passfilePath(passfile), ops)
+	return executeRun(runCtx, cancel, request, sink, path, operation, passfilePath(passfile), rootCertPath, ops)
 }
 
 func validateRunInputs(ctx context.Context, tool Tool, manifest packageManifest, packagePath, cacheRoot string) (string, error) {
@@ -212,13 +249,45 @@ func validateRunInputs(ctx context.Context, tool Tool, manifest packageManifest,
 }
 
 func validRunRequest(request RunRequest) bool {
-	if !validTool(request.Tool) || request.Timeout <= 0 || request.CleanupTimeout <= 0 || request.CleanupTimeout > maxCleanupTimeout || request.StdoutLimit == 0 || request.StderrLimit == 0 || request.Stdout == nil || request.Version == (request.Connection != nil) {
+	if !validTool(request.Tool) || request.Timeout <= 0 || request.CleanupTimeout <= 0 || request.CleanupTimeout > maxCleanupTimeout || request.StdoutLimit == 0 || request.StderrLimit == 0 || request.Stdout == nil {
 		return false
 	}
-	if request.Connection == nil {
-		return true
+	switch request.Mode {
+	case ModeVersion:
+		return request.Connection == nil && request.Input == nil && request.InputLimit == 0
+	case ModeDump:
+		if request.Tool != PGDump || request.Connection == nil || request.Input != nil || request.InputLimit != 0 {
+			return false
+		}
+	case ModeRestore:
+		if request.Tool != PGRestore || request.Connection == nil || request.Input == nil || request.InputLimit == 0 || request.InputLimit > maxStreamBytes {
+			return false
+		}
+	default:
+		return false
 	}
-	return credentials.ValidatePGPassEntry(credentials.PGPassEntry{Host: request.Connection.Host, Port: request.Connection.Port, Database: request.Connection.Database, User: request.Connection.User, Password: request.Connection.Password}) == nil
+	return (request.testHostAddr == "" || request.testHostAddr == "127.0.0.1") &&
+		len(request.Connection.RootCertPEM) > 0 && len(request.Connection.RootCertPEM) <= maxRootCertBytes && validRootCertPEM(request.Connection.RootCertPEM) &&
+		credentials.ValidatePGPassEntry(credentials.PGPassEntry{Host: request.Connection.Host, Port: request.Connection.Port, Database: request.Connection.Database, User: request.Connection.User, Password: request.Connection.Password}) == nil
+}
+
+func validRootCertPEM(data []byte) bool {
+	count := 0
+	for {
+		data = bytes.TrimSpace(data)
+		if len(data) == 0 {
+			return count > 0
+		}
+		block, rest := pem.Decode(data)
+		if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
+			return false
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil || !certificate.BasicConstraintsValid || !certificate.IsCA {
+			return false
+		}
+		data, count = rest, count+1
+	}
 }
 
 func manifestFile(manifest packageManifest, path string) payloadFile {
@@ -268,20 +337,23 @@ type runExecution struct {
 	files   []*runFile
 	process ownedProcess
 
+	inputResult  chan streamResult
 	stdoutResult chan streamResult
 	stderrResult chan streamResult
 	waitResult   chan processResult
+	inputDone    bool
 	stdoutDone   bool
 	stderrDone   bool
 	waitDone     bool
+	input        streamResult
 	stdout       streamResult
 	stderr       streamResult
 	waited       processResult
 	workers      sync.WaitGroup
 }
 
-func executeRun(ctx context.Context, cancel context.CancelFunc, request RunRequest, sink *runSink, executable, operation, passfile string, ops runOps) (result RunResult, resultErr error) {
-	run := &runExecution{ctx: ctx, cancel: cancel, request: request, ops: ops, sink: sink, waited: processResult{code: -1}}
+func executeRun(ctx context.Context, cancel context.CancelFunc, request RunRequest, sink *runSink, executable, operation, passfile, rootCertPath string, ops runOps) (result RunResult, resultErr error) {
+	run := &runExecution{ctx: ctx, cancel: cancel, request: request, ops: ops, sink: sink, inputDone: request.Input == nil, waited: processResult{code: -1}}
 	defer func() { result, resultErr = run.finalize(resultErr) }()
 
 	home, temp, config := filepath.Join(operation, "home"), filepath.Join(operation, "tmp"), filepath.Join(operation, "config")
@@ -290,14 +362,28 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 			return RunResult{}, ErrRun
 		}
 	}
-	stdinFile, err := ops.openNull()
-	if stdinFile != nil {
-		run.own(stdinFile)
+	var stdin, stdinWrite *runFile
+	var err error
+	if request.Mode == ModeRestore {
+		reader, writer, pipeErr := ops.pipe()
+		if reader != nil {
+			stdin = run.own(reader)
+		}
+		if writer != nil {
+			stdinWrite = run.own(writer)
+		}
+		if pipeErr != nil || stdin == nil || stdinWrite == nil {
+			return RunResult{}, ErrRun
+		}
+	} else {
+		stdinFile, openErr := ops.openNull()
+		if stdinFile != nil {
+			stdin = run.own(stdinFile)
+		}
+		if openErr != nil || stdin == nil {
+			return RunResult{}, ErrRun
+		}
 	}
-	if err != nil || stdinFile == nil {
-		return RunResult{}, ErrRun
-	}
-	stdin := run.files[len(run.files)-1]
 	stdoutReadFile, stdoutWriteFile, err := ops.pipe()
 	if stdoutReadFile != nil {
 		run.own(stdoutReadFile)
@@ -328,8 +414,20 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 	if err != nil {
 		return RunResult{}, ErrRun
 	}
+	if stdinWrite != nil {
+		run.inputResult = make(chan streamResult, 1)
+		run.workers.Add(1)
+		go func() {
+			defer run.workers.Done()
+			result := pumpInput(ctx, request.Input, stdinWrite.file, request.InputLimit)
+			if stdinWrite.close() != nil && result.err == nil {
+				result.err = ErrRun
+			}
+			run.inputResult <- result
+		}()
+	}
 	process, err := ops.start(platform.ProcessSpec{
-		Path: executable, Args: arguments, Env: runEnvironment(home, temp, config, passfile), Dir: operation,
+		Path: executable, Args: arguments, Env: runEnvironment(home, temp, config, passfile, rootCertPath, request.testHostAddr), Dir: operation,
 		Stdin: stdin.file, Stdout: stdoutWrite.file, Stderr: stderrWrite.file,
 	})
 	if process != nil {
@@ -367,8 +465,14 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 		run.stderrResult <- pumpDiscard(ctx, stderrRead.file, request.StderrLimit)
 	}()
 
-	for !run.stdoutDone || !run.stderrDone || !run.waitDone {
+	for !run.inputDone || !run.stdoutDone || !run.stderrDone || !run.waitDone {
 		select {
+		case value := <-run.inputResult:
+			run.input, run.inputDone = value, true
+			run.inputResult = nil
+			if value.err != nil {
+				return RunResult{}, value.err
+			}
 		case value := <-run.stdoutResult:
 			run.stdout, run.stdoutDone = value, true
 			run.stdoutResult = nil
@@ -413,6 +517,9 @@ func (r *runExecution) finalize(cause error) (RunResult, error) {
 			lifecycleErr = true
 		}
 	}
+	if r.request.Input != nil && r.request.Input.Close() != nil {
+		lifecycleErr = true
+	}
 	if r.process != nil && r.process.CloseContext(cleanupCtx) != nil {
 		lifecycleErr = true
 		// The normal cleanup budget must not let an owned waiter or process tree
@@ -443,8 +550,10 @@ func (r *runExecution) finalize(cause error) (RunResult, error) {
 }
 
 func (r *runExecution) collect(ctx context.Context) bool {
-	for !r.stdoutDone && r.stdoutResult != nil || !r.stderrDone && r.stderrResult != nil || !r.waitDone && r.waitResult != nil {
+	for !r.inputDone && r.inputResult != nil || !r.stdoutDone && r.stdoutResult != nil || !r.stderrDone && r.stderrResult != nil || !r.waitDone && r.waitResult != nil {
 		select {
+		case value := <-r.inputResult:
+			r.input, r.inputDone, r.inputResult = value, true, nil
 		case value := <-r.stdoutResult:
 			r.stdout, r.stdoutDone, r.stdoutResult = value, true, nil
 		case value := <-r.stderrResult:
@@ -488,6 +597,17 @@ func (f *runFile) close() error {
 	return f.err
 }
 
+type runInput struct {
+	io.ReadCloser
+	once sync.Once
+	err  error
+}
+
+func (r *runInput) Close() error {
+	r.once.Do(func() { r.err = r.ReadCloser.Close() })
+	return r.err
+}
+
 type runSink struct {
 	sink      OutputSink
 	postClose func() error
@@ -499,9 +619,17 @@ func newRunSink(sink OutputSink) *runSink { return &runSink{sink: sink} }
 func (s *runSink) WriteContext(ctx context.Context, data []byte) (int, error) {
 	return s.sink.WriteContext(ctx, data)
 }
-func (s *runSink) CloseContext(ctx context.Context) error { return s.close(ctx) }
-func (s *runSink) close(ctx context.Context) error {
-	s.once.Do(func() { s.err = s.sink.CloseContext(ctx) })
+func (s *runSink) CloseContext(ctx context.Context) error { return s.finish(ctx, nil) }
+func (s *runSink) finish(ctx context.Context, cause error) error {
+	s.once.Do(func() {
+		if cause != nil {
+			if aborter, ok := s.sink.(AbortableOutputSink); ok {
+				s.err = aborter.AbortContext(ctx)
+				return
+			}
+		}
+		s.err = s.sink.CloseContext(ctx)
+	})
 	return s.err
 }
 
@@ -513,6 +641,65 @@ func pumpStdout(ctx context.Context, file *os.File, sink OutputSink, limit uint6
 
 func pumpDiscard(ctx context.Context, file *os.File, limit uint64) streamResult {
 	return pump(ctx, file, limit, func(chunk []byte) (int, error) { return len(chunk), nil })
+}
+
+func pumpInput(ctx context.Context, source io.Reader, destination io.Writer, limit uint64) streamResult {
+	buffer := make([]byte, runBufferBytes)
+	var total uint64
+	zeroReads := 0
+	for {
+		if ctx.Err() != nil {
+			return streamResult{bytes: total, err: ErrRun}
+		}
+		remaining := limit - total
+		readSize := len(buffer)
+		if remaining < uint64(readSize) {
+			readSize = int(remaining) + 1
+		}
+		n, readErr := source.Read(buffer[:readSize])
+		if n < 0 || n > readSize {
+			return streamResult{bytes: total, err: ErrRun}
+		}
+		if n > 0 {
+			allowed := n
+			excess := uint64(n) > remaining
+			if excess {
+				allowed = int(remaining)
+			}
+			for written := 0; written < allowed; {
+				if ctx.Err() != nil {
+					return streamResult{bytes: total, err: ErrRun}
+				}
+				count, writeErr := destination.Write(buffer[written:allowed])
+				if count < 0 || count > allowed-written {
+					return streamResult{bytes: total, err: ErrRun}
+				}
+				written += count
+				total += uint64(count)
+				if writeErr != nil || count == 0 {
+					return streamResult{bytes: total, err: ErrRun}
+				}
+			}
+			if excess {
+				return streamResult{bytes: total, err: ErrRun}
+			}
+			zeroReads = 0
+		}
+		if readErr == io.EOF {
+			return streamResult{bytes: total}
+		}
+		if readErr != nil {
+			return streamResult{bytes: total, err: ErrRun}
+		}
+		if n == 0 {
+			zeroReads++
+			if zeroReads >= 100 {
+				return streamResult{bytes: total, err: ErrRun}
+			}
+		} else {
+			zeroReads = 0
+		}
+	}
 }
 
 func pump(ctx context.Context, file *os.File, limit uint64, consume func([]byte) (int, error)) streamResult {
@@ -568,7 +755,7 @@ func passfilePath(passfile passfileLifecycle) string {
 }
 
 func runArguments(request RunRequest) ([]string, error) {
-	if request.Version {
+	if request.Mode == ModeVersion {
 		return []string{"--version"}, nil
 	}
 	if request.Connection == nil {
@@ -576,16 +763,23 @@ func runArguments(request RunRequest) ([]string, error) {
 	}
 	connection := request.Connection
 	common := []string{"--no-password", "--host=" + connection.Host, "--port=" + strconv.FormatUint(uint64(connection.Port), 10), "--username=" + connection.User, "--dbname=" + connection.Database}
-	if request.Tool == PSQL {
-		return append([]string{"-X", "--set=ON_ERROR_STOP=1"}, common...), nil
+	switch request.Mode {
+	case ModeDump:
+		return append([]string{"--format=custom"}, common...), nil
+	case ModeRestore:
+		return append([]string{"--single-transaction", "--exit-on-error"}, common...), nil
+	default:
+		return nil, ErrRun
 	}
-	return common, nil
 }
 
-func runEnvironment(home, temp, config, passfile string) []string {
+func runEnvironment(home, temp, config, passfile, rootCert, testHostAddr string) []string {
 	environment := []string{"HOME=" + home, "TMPDIR=" + temp, "TMP=" + temp, "TEMP=" + temp, "XDG_CONFIG_HOME=" + config, "LANG=C", "LC_ALL=C"}
 	if passfile != "" {
-		environment = append(environment, "PGPASSFILE="+passfile)
+		environment = append(environment, "PGPASSFILE="+passfile, "PGSSLMODE=verify-full", "PGSSLROOTCERT="+rootCert)
+	}
+	if testHostAddr != "" {
+		environment = append(environment, "PGHOSTADDR="+testHostAddr)
 	}
 	return environment
 }

@@ -46,6 +46,9 @@ func Decrypt(src io.Reader, passphrase string) (io.Reader, error) {
 	return age.Decrypt(src, identity)
 }
 
+// ValidatePassphrase reports whether a passphrase is valid for an archive.
+func ValidatePassphrase(passphrase string) error { return validatePassphrase(passphrase) }
+
 func validatePassphrase(passphrase string) error {
 	if passphrase == "" || len(passphrase) > maxPassphraseLength || !utf8.ValidString(passphrase) {
 		return errors.New("invalid archive passphrase")

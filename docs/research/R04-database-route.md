@@ -1,7 +1,8 @@
 # R04 — Supabase-aware database route
 
 **Status:** open research decision. This records a conservative qualification target,
-not a hosted-support claim or a tested capture/restore recipe.
+not a hosted-support claim. One production-shaped internal API recipe has been
+tested only on synthetic local PostgreSQL 17 clusters; hosted support remains blocked.
 
 ## Initial target
 
@@ -38,11 +39,31 @@ so it could not reveal missing cluster-wide roles. This is a recipe blocker,
 not a license to copy source roles or bypass ownership. No hosted Supabase
 baseline or role-provisioning policy has been qualified.
 
-The source is observed read-only. Capture needs a coherent snapshot or a documented quiet
-window; separate passes do not imply cross-service atomicity. Restore uses target and
-archive inputs only, refuses nonempty/ambiguous targets, and remains quarantined after a
-failed or uncertain mutation. A command exit is not a security or recovery-equivalence
-result.
+`TestEncryptedCrossClusterRecovery` now exercises the internal `Capture` and
+`Restore` APIs across two independently initialized TLS PostgreSQL 17 loopback
+clusters. The test packages only the six files from an explicitly selected
+private client candidate under the `integration` tag, captures one full
+custom-format database component directly into the private encrypted archive,
+verifies the archive offline, and stops the source before target recovery. The
+first target restore fails on the deliberately absent synthetic owner and
+`--single-transaction` leaves both the application schema and role absent. After
+explicitly provisioning that one synthetic target role, restore preserves the
+row, sequence state, owner, and a SQL-looking migration-history string as inert
+data; archive verification passes after both attempts. This qualifies only the
+local candidate-streaming recipe. The component is marked `incomplete`: cluster
+globals/roles and provider-managed services are excluded. No client is selected
+for production, no CLI operation is enabled, and no hosted backup/restore was
+authorized or run.
+
+Capture first performs a bounded TLS-verified, read-only catalog observation, then
+runs `pg_dump` in a separate connection; the metadata observation and dump are not
+one atomic cross-service snapshot. Restore accepts target and archive inputs only,
+verifies the encrypted archive before target observation, and applies
+`CheckEmptyTargetV1` to a caller-declared application scope before invoking
+`pg_restore`. That local check ignores state outside the declared scope and is
+not a Supabase baseline or full restore authorization. A command exit is not a
+security or recovery-equivalence result; side effects outside the PostgreSQL
+transaction and later DDL drift remain unqualified.
 
 ## Evidence available versus required
 

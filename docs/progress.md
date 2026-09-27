@@ -1412,11 +1412,11 @@ remains unqualified. At Task 11 completion, no hosted project or credential had
 been used or authorized; the later separate read-only authorization and probe
 outcome are recorded below.
 
-**Next gate:** a product backup/restore needs a separately approved and
-qualified PostgreSQL client payload plus typed dump/restore streaming in the
-production runner. Its inventory remains empty; no PATH fallback is allowed.
-When hosted backup/restore testing is ready, request a named disposable
-source/target and exact allowed actions before connecting.
+**Gate at this checkpoint:** product backup/restore required an approved client
+payload plus typed dump/restore streaming. The later Task 11 follow-up below
+records the local-only typed APIs and encrypted recovery proof; the production
+inventory remains empty and no PATH fallback is allowed. Hosted testing still
+requires a named disposable source/target and exact action authorization.
 
 ### Authorized read-only metadata probe follow-up (2026-09-26)
 
@@ -1441,3 +1441,56 @@ leg or independent backend identity. Further hosted access requires separate
 authorization. See
 [`R03-connectivity.md`](research/R03-connectivity.md) for certificate
 provenance, fingerprint, expiry, and route limits.
+
+### Task 11 — typed encrypted stream recovery follow-up (2026-09-26)
+
+Added fixed `pg_dump --format=custom` and `pg_restore --single-transaction
+--exit-on-error` operations to `internal/tools`, with explicit `verify-full`
+CA material, private per-run passfiles, bounded stdout/stdin, worker cleanup,
+and abortable output sinks. A nonzero dump now aborts the archive pipe instead
+of allowing a valid-looking prefix to publish; cancellation during pipe
+back-pressure also aborts the blocked writer. `Capture` and `Restore` are
+internal database APIs only: capture performs a PG17/TLS/read-only catalog
+observation then streams one full custom-format database component into the
+existing encrypted local publisher, marked `incomplete`; restore verifies the
+single expected encrypted component before target observation, requires the
+caller-declared empty application scope, then decrypts directly to pg_restore
+stdin. `RestoreRequest` contains the target and archive, not a source. The
+production native-client inventory is still empty and normal CLI backup/restore
+remain unavailable.
+
+The `integration`-tagged candidate runner packages and extracts only the six
+explicitly selected private client/runtime files. Its private `PGHOSTADDR=127.0.0.1`
+route is unavailable to normal `Run` requests. No client files or archives were
+added to Git.
+
+`TestEncryptedCrossClusterRecovery` passed on two disposable TLS PostgreSQL
+17 loopback clusters: encrypted capture and offline verify; source shutdown;
+empty-target preflight; missing-owner restore failure with schema/role absent
+after rollback; then success after explicit synthetic owner provisioning,
+with row, sequence, owner, and inert migration-history text verified. Archive
+verification passed after both attempts. This is one synthetic local recipe,
+not hosted Supabase qualification, a universal baseline, Auth/Storage recovery,
+global-role recovery, or redistribution approval.
+
+Focused evidence:
+
+```sh
+SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin SPARC_TEST_PG_CLIENT_BIN=/tmp/sparc-r02-openssl35.lXTpLX/relocated-pg-client/bin GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -mod=readonly -tags=integration ./internal/database -run '^TestEncryptedCrossClusterRecovery$' -count=1 -v
+```
+
+Fresh verification on local macOS arm64 passed:
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -mod=readonly ./... -count=1 -timeout=240s`
+- Full and race database integration with `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin` and `SPARC_TEST_PG_CLIENT_BIN=/tmp/sparc-r02-openssl35.lXTpLX/relocated-pg-client/bin`, using `go test -mod=readonly -tags=integration ./internal/database -count=1 -timeout=600s` and the same command with `-race`
+- Tagged candidate tools suite with the private `SPARC_TEST_PG_CLIENT_BIN`
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -mod=readonly -race -p=1 ./... -count=1 -timeout=600s`
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -mod=readonly -tags=localdemo ./... -count=1 -timeout=300s`
+- Default and integration `go vet`; Windows AMD64 integration-tagged tools/database test cross-compiles; formatting and `git diff --check`
+
+`TestCaptureCancellationUnblocksStreamingSink` was first observed failing without a cancellation-aware sink, then passed repeatedly and under `-race`. The encrypted recovery integration case passed within both database integration runs. Cross-compilation is not Windows runtime qualification.
+
+This continuation used no hosted endpoint or credentials. Earlier authorized
+read-only metadata evidence remains separately scoped and does not authorize
+capture or restore. The production payload inventory remains empty; normal CLI
+operations, client selection, signing, redistribution, other OS runtime
+qualification, and hosted Task 12 remain blocked.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,14 +75,14 @@ func TestRunUsesOnlyTypedVersionAndIsolatedProcessSpec(t *testing.T) {
 
 func TestRunConnectedInvocationUsesOnlyScopedPassfile(t *testing.T) {
 	for _, test := range []struct {
+		name string
 		tool Tool
+		mode RunMode
 		args []string
 	}{
-		{PGDump, []string{"--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}},
-		{PGRestore, []string{"--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}},
-		{PSQL, []string{"-X", "--set=ON_ERROR_STOP=1", "--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}},
+		{"pg_dump", PGDump, ModeDump, []string{"--format=custom", "--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}},
 	} {
-		t.Run(string(test.tool), func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			manifest, packagePath, cacheRoot := preparedRunPayload(t)
 			t.Setenv("PGPASSWORD", "ambient-secret")
 			t.Setenv("PGPASSFILE", "ambient-passfile")
@@ -96,6 +97,11 @@ func TestRunConnectedInvocationUsesOnlyScopedPassfile(t *testing.T) {
 				if passfile == "" {
 					t.Fatal("missing scoped passfile")
 				}
+				rootCert := environmentValue(spec.Env, "PGSSLROOTCERT")
+				rootBytes, rootErr := platform.ReadPrivateFile(rootCert, 1<<20)
+				if rootErr != nil || !bytes.Equal(rootBytes, testRootCertPEM()) || environmentValue(spec.Env, "PGSSLMODE") != "verify-full" {
+					t.Fatal("native client TLS was not pinned to the explicit private CA")
+				}
 				line, err := platform.ReadPrivateFile(passfile, 1024)
 				if err != nil || string(line) != "db.example:5432:project db:backup user:secret-canary\n" {
 					t.Fatalf("passfile = %q, %v", line, err)
@@ -104,7 +110,11 @@ func TestRunConnectedInvocationUsesOnlyScopedPassfile(t *testing.T) {
 				return completedProcess(0), nil
 			})
 			request := connectedRunRequestForTest(sink)
-			request.Tool = test.tool
+			request.Tool, request.Mode = test.tool, test.mode
+			if test.mode == ModeRestore {
+				request.Input = io.NopCloser(strings.NewReader("synthetic-dump"))
+				request.InputLimit = 1024
+			}
 			result, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops)
 			if err != nil || result != (RunResult{ExitCode: 0, StdoutBytes: 2}) {
 				t.Fatalf("run = %#v, %v", result, err)
@@ -124,6 +134,154 @@ func TestRunConnectedInvocationUsesOnlyScopedPassfile(t *testing.T) {
 				t.Fatalf("passfile remained: %v", err)
 			}
 		})
+	}
+}
+
+func TestRunRestoreArgumentsRequireTypedRestoreMode(t *testing.T) {
+	request := connectedRunRequestForTest(&memorySink{})
+	request.Mode = ModeRestore
+	request.Tool = PGRestore
+	request.Input = io.NopCloser(strings.NewReader("synthetic-dump"))
+	request.InputLimit = 1024
+	got, err := runArguments(request)
+	want := []string{"--single-transaction", "--exit-on-error", "--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}
+	if err != nil || strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("restore arguments = %#v, %v; want %#v", got, err, want)
+	}
+	malformedCA := connectedRunRequestForTest(&memorySink{})
+	malformedCA.Connection.RootCertPEM = []byte("not a CA PEM")
+	if validRunRequest(malformedCA) {
+		t.Fatal("accepted malformed CA PEM")
+	}
+	for _, test := range []RunRequest{
+		{Tool: PGDump, Mode: ModeRestore, Connection: request.Connection, Input: request.Input, InputLimit: 1024, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PGRestore, Mode: ModeRestore, Connection: request.Connection, Input: request.Input, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PGRestore, Mode: ModeDump, Connection: request.Connection, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+	} {
+		if validRunRequest(test) {
+			t.Fatalf("accepted invalid typed request: %+v", test)
+		}
+	}
+}
+
+func TestRunRestoreStreamsBoundedInputAndClosesIt(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		data      string
+		limit     uint64
+		wantInput string
+		wantErr   error
+	}{
+		{"exact limit", "synthetic-custom-archive", uint64(len("synthetic-custom-archive")), "synthetic-custom-archive", nil},
+		{"one byte over", "synthetic-custom-archive!", uint64(len("synthetic-custom-archive")), "synthetic-custom-archive", ErrRun},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manifest, packagePath, cacheRoot := preparedRunPayload(t)
+			input := &trackedRunInput{Reader: strings.NewReader(test.data)}
+			request := connectedRunRequestForTest(&memorySink{})
+			request.Tool, request.Mode = PGRestore, ModeRestore
+			request.Input, request.InputLimit = input, test.limit
+			request.Connection.Password = []byte("secret-canary")
+			var received string
+			ops := runTestOps(func(spec platform.ProcessSpec) (ownedProcess, error) {
+				data, err := io.ReadAll(spec.Stdin)
+				received = string(data)
+				if err != nil {
+					return nil, err
+				}
+				return completedProcess(0), nil
+			})
+			result, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops)
+			if err != test.wantErr || received != test.wantInput || input.closeCount() != 1 {
+				t.Fatalf("restore = %#v, %v, input=%q closes=%d", result, err, received, input.closeCount())
+			}
+			if err != nil && result != (RunResult{}) {
+				t.Fatalf("failed restore returned result %#v", result)
+			}
+		})
+	}
+}
+
+func TestRunRestorePropagatesInputReadFailure(t *testing.T) {
+	manifest, packagePath, cacheRoot := preparedRunPayload(t)
+	input := &trackedRunInput{Reader: failingRunReader{}}
+	request := connectedRunRequestForTest(&memorySink{})
+	request.Tool, request.Mode = PGRestore, ModeRestore
+	request.Input, request.InputLimit = input, 1024
+	ops := runTestOps(func(spec platform.ProcessSpec) (ownedProcess, error) {
+		_, _ = io.ReadAll(spec.Stdin)
+		return completedProcess(0), nil
+	})
+	result, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops)
+	if err != ErrRun || result != (RunResult{}) || input.closeCount() != 1 {
+		t.Fatalf("restore = %#v, %v, input closes=%d", result, err, input.closeCount())
+	}
+}
+
+func TestRunFailureAbortsStreamingSink(t *testing.T) {
+	manifest, packagePath, cacheRoot := preparedRunPayload(t)
+	sink := &abortableRunSink{memorySink: memorySink{}}
+	ops := runTestOps(func(spec platform.ProcessSpec) (ownedProcess, error) {
+		_, _ = spec.Stdout.Write([]byte("valid-looking-prefix"))
+		return completedProcess(23), nil
+	})
+	result, err := runWith(context.Background(), validRunRequestForTest(sink), manifest, packagePath, cacheRoot, ops)
+	if err != ErrRun || result != (RunResult{}) || sink.closeCount() != 0 || sink.abortCount() != 1 {
+		t.Fatalf("failed stream = %#v, %v; close=%d abort=%d", result, err, sink.closeCount(), sink.abortCount())
+	}
+}
+
+func TestRunRestoreCancellationClosesBlockedInputAndJoins(t *testing.T) {
+	manifest, packagePath, cacheRoot := preparedRunPayload(t)
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	input := &closeTrackingInput{ReadCloser: reader}
+	request := connectedRunRequestForTest(&memorySink{})
+	request.Tool, request.Mode = PGRestore, ModeRestore
+	request.Input, request.InputLimit = input, 1024
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	ops := runTestOps(func(platform.ProcessSpec) (ownedProcess, error) {
+		close(started)
+		return waitingProcess(), nil
+	})
+	result := make(chan error, 1)
+	go func() {
+		_, err := runWith(ctx, request, manifest, packagePath, cacheRoot, ops)
+		result <- err
+	}()
+	awaitSignal(t, started, "restore process start")
+	cancel()
+	if err := awaitError(t, result, "restore cancellation cleanup"); err != ErrRun || input.closeCount() != 1 {
+		t.Fatalf("restore cancellation error=%v input closes=%d", err, input.closeCount())
+	}
+}
+
+func TestRunDumpSinkFailureCancelsProcess(t *testing.T) {
+	manifest, packagePath, cacheRoot := preparedRunPayload(t)
+	sink := newGatedSink(true)
+	process := waitingProcess()
+	ops := runTestOps(func(spec platform.ProcessSpec) (ownedProcess, error) {
+		if _, err := spec.Stdout.Write([]byte("synthetic dump")); err != nil {
+			return nil, err
+		}
+		return process, nil
+	})
+	result := make(chan error, 1)
+	go func() {
+		_, err := runWith(context.Background(), connectedRunRequestForTest(sink), manifest, packagePath, cacheRoot, ops)
+		result <- err
+	}()
+	awaitSignal(t, sink.entered, "dump sink write")
+	close(sink.release)
+	if err := awaitError(t, result, "dump sink failure cleanup"); err != ErrOutput || sink.closeCount() != 1 {
+		t.Fatalf("dump run error=%v sink closes=%d", err, sink.closeCount())
+	}
+	select {
+	case <-process.done:
+	default:
+		t.Fatal("dump process was not cancelled after sink failure")
 	}
 }
 
@@ -281,11 +439,11 @@ func TestRunRejectsInvalidRequestsAndPrestartCancellation(t *testing.T) {
 	manifest, packagePath, cacheRoot := preparedRunPayload(t)
 	for _, request := range []RunRequest{
 		{},
-		{Tool: PSQL, Version: true, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1},
-		{Tool: PSQL, Version: true, Timeout: 0, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
-		{Tool: PSQL, Version: true, Timeout: time.Second, CleanupTimeout: maxCleanupTimeout + time.Nanosecond, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
-		{Tool: PSQL, Version: true, Connection: &PGConnection{Host: "host", Port: 5432, User: "user", Database: "database", Password: []byte("secret-canary")}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
-		{Tool: PSQL, Connection: &PGConnection{}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PSQL, Mode: ModeVersion, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1},
+		{Tool: PSQL, Mode: ModeVersion, Timeout: 0, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PSQL, Mode: ModeVersion, Timeout: time.Second, CleanupTimeout: maxCleanupTimeout + time.Nanosecond, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PGDump, Mode: ModeDump, Connection: &PGConnection{Host: "host", Port: 5432, User: "user", Database: "database", Password: []byte("secret-canary")}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PSQL, Mode: ModeVersion, Connection: &PGConnection{Host: "host", Port: 5432, User: "user", Database: "database", Password: []byte("secret-canary"), RootCertPEM: testRootCertPEM()}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
 	} {
 		if _, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, runTestOps(nil)); err != ErrRun {
 			t.Fatalf("invalid request error = %v", err)
@@ -1020,11 +1178,19 @@ func preparedRunPayload(t *testing.T) (packageManifest, string, string) {
 }
 
 func validRunRequestForTest(sink OutputSink) RunRequest {
-	return RunRequest{Tool: PSQL, Version: true, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
+	return RunRequest{Tool: PSQL, Mode: ModeVersion, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
 }
 
 func connectedRunRequestForTest(sink OutputSink) RunRequest {
-	return RunRequest{Tool: PSQL, Connection: &PGConnection{Host: "db.example", Port: 5432, User: "backup user", Database: "project db", Password: []byte("secret-canary")}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
+	return RunRequest{Tool: PGDump, Mode: ModeDump, Connection: &PGConnection{Host: "db.example", Port: 5432, User: "backup user", Database: "project db", Password: []byte("secret-canary"), RootCertPEM: testRootCertPEM()}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
+}
+
+func testRootCertPEM() []byte {
+	data, err := os.ReadFile(filepath.Join("..", "database", "prod-ca-2021.crt"))
+	if err != nil {
+		panic("test CA fixture missing")
+	}
+	return data
 }
 
 func environmentValue(entries []string, key string) string {
@@ -1043,6 +1209,58 @@ func runTestOps(start func(platform.ProcessSpec) (ownedProcess, error)) runOps {
 	}
 	return ops
 }
+
+type abortableRunSink struct {
+	memorySink
+	aborts int
+}
+
+func (s *abortableRunSink) AbortContext(context.Context) error {
+	s.aborts++
+	return nil
+}
+func (s *abortableRunSink) abortCount() int { return s.aborts }
+
+type closeTrackingInput struct {
+	io.ReadCloser
+	mu     sync.Mutex
+	closes int
+}
+
+func (r *closeTrackingInput) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closes++
+	return r.ReadCloser.Close()
+}
+func (r *closeTrackingInput) closeCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closes
+}
+
+type trackedRunInput struct {
+	io.Reader
+	mu     sync.Mutex
+	closes int
+}
+
+func (r *trackedRunInput) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closes++
+	return nil
+}
+
+func (r *trackedRunInput) closeCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closes
+}
+
+type failingRunReader struct{}
+
+func (failingRunReader) Read([]byte) (int, error) { return 0, errors.New("secret-canary") }
 
 type fakeRunProcess struct {
 	done                   chan struct{}
