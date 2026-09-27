@@ -56,6 +56,46 @@ func TestCaptureRequiresPostgres17VerifiedReadOnlyObservation(t *testing.T) {
 	}
 }
 
+func TestCaptureWithExternalClientRejectsClientBeforeSourceObservation(t *testing.T) {
+	request := captureTestRequest(t)
+	ops := recoveryTestOps()
+	observed := false
+	ops.validateExternal = func(string) error { return tools.ErrRun }
+	ops.runExternal = func(context.Context, string, tools.RunRequest) (tools.RunResult, error) {
+		return tools.RunResult{}, tools.ErrRun
+	}
+	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
+		observed = true
+		return CatalogObservation{}, nil
+	}
+	if _, err := captureWithExternalClient(context.Background(), "relative/bin", request, ops); err != ErrCapture || observed {
+		t.Fatalf("invalid external client reached source observation: err=%v observed=%t", err, observed)
+	}
+}
+
+func TestCaptureWithExternalClientUsesClosedCapturePipeline(t *testing.T) {
+	request := captureTestRequest(t)
+	ops := recoveryTestOps()
+	called := false
+	ops.runExternal = func(ctx context.Context, clientBin string, runRequest tools.RunRequest) (tools.RunResult, error) {
+		called = true
+		if clientBin != "/approved/pg17/bin" || runRequest.Tool != tools.PGDump || runRequest.Mode != tools.ModeDump || runRequest.Connection == nil {
+			return tools.RunResult{}, tools.ErrRun
+		}
+		if _, err := runRequest.Stdout.WriteContext(ctx, []byte("synthetic external dump")); err != nil {
+			return tools.RunResult{}, err
+		}
+		if err := runRequest.Stdout.CloseContext(ctx); err != nil {
+			return tools.RunResult{}, err
+		}
+		return tools.RunResult{ExitCode: 0}, nil
+	}
+	manifest, err := captureWithExternalClient(context.Background(), "/approved/pg17/bin", request, ops)
+	if err != nil || !called || !validDatabaseDumpManifest(manifest) {
+		t.Fatalf("external capture = manifest %#v, called=%t, err=%v", manifest, called, err)
+	}
+}
+
 func TestCaptureStreamsOneIncompleteDatabaseComponent(t *testing.T) {
 	request := captureTestRequest(t)
 	ops := recoveryTestOps()
@@ -373,6 +413,7 @@ func recoveryTestOps() recoveryOps {
 		observe: func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
 			return CatalogObservation{ServerMajor: 17, TLS: true, ReadOnly: true}, nil
 		},
+		validateExternal: func(string) error { return nil },
 		run: func(ctx context.Context, request tools.RunRequest) (tools.RunResult, error) {
 			if request.Stdout != nil {
 				_ = request.Stdout.CloseContext(ctx)

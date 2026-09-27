@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+func TestValidateExternalClientRejectsInvalidPath(t *testing.T) {
+	if err := ValidateExternalClient("relative/bin"); err != ErrRun {
+		t.Fatalf("ValidateExternalClient() error = %v, want %v", err, ErrRun)
+	}
+}
+
 func TestRunExternalRejectsInvalidInputs(t *testing.T) {
 	request := RunRequest{
 		Tool: PGDump, Mode: ModeVersion, Timeout: time.Second, CleanupTimeout: time.Second,

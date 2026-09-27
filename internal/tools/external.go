@@ -14,6 +14,18 @@ import (
 	"github.com/burggraf/sparc-cli/internal/platform"
 )
 
+// ValidateExternalClient validates an explicitly selected local PostgreSQL 17
+// client directory before any source connection. It is not a payload approval.
+func ValidateExternalClient(clientBin string) error {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		return ErrRun
+	}
+	if _, _, err := buildExternalPayloadArchive(clientBin); err != nil {
+		return ErrRun
+	}
+	return nil
+}
+
 // RunExternal executes a closed PostgreSQL operation from an explicitly
 // selected local PostgreSQL 17 client directory. It is an unbundled macOS
 // arm64 developer path, not a production payload or PATH fallback.

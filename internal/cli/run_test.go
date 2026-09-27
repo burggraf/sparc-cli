@@ -28,13 +28,13 @@ func TestRunCommandContract(t *testing.T) {
 			name:       "help",
 			args:       []string{"help"},
 			wantCode:   0,
-			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Back up a Supabase project (not yet available)\n  verify   Verify encrypted archive integrity offline\n  restore  Restore a backup (not yet available)\n\nRun \"sparc verify --help\" for verification options.\n",
+			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Create an encrypted local database archive\n  verify   Verify encrypted archive integrity offline\n  restore  Restore a backup (not yet available)\n\nRun \"sparc verify --help\" for verification options.\n",
 		},
 		{
 			name:       "help flag",
 			args:       []string{"--help"},
 			wantCode:   0,
-			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Back up a Supabase project (not yet available)\n  verify   Verify encrypted archive integrity offline\n  restore  Restore a backup (not yet available)\n\nRun \"sparc verify --help\" for verification options.\n",
+			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Create an encrypted local database archive\n  verify   Verify encrypted archive integrity offline\n  restore  Restore a backup (not yet available)\n\nRun \"sparc verify --help\" for verification options.\n",
 		},
 		{
 			name:       "version",
@@ -49,10 +49,10 @@ func TestRunCommandContract(t *testing.T) {
 			wantStdout: "sparc dev\n",
 		},
 		{
-			name:       "backup unavailable",
+			name:       "backup requires flags",
 			args:       []string{"backup"},
-			wantCode:   1,
-			wantStderr: "sparc: backup is not available in this scaffold\n",
+			wantCode:   2,
+			wantStderr: "sparc: invalid backup arguments\n",
 		},
 		{
 			name:       "restore unavailable",
@@ -143,6 +143,9 @@ func TestRunRejectsExtraArguments(t *testing.T) {
 			wantStderr := "sparc: this command takes no arguments in this scaffold\nRun \"sparc help\" for usage.\n"
 			if tt.name == "help" || tt.name == "version" {
 				wantStderr = "sparc: this command takes no arguments\nRun \"sparc help\" for usage.\n"
+			}
+			if tt.name == "backup option" {
+				wantStderr = "sparc: invalid backup arguments\n"
 			}
 			if got := stderr.String(); got != wantStderr {
 				t.Errorf("Run(%q) stderr = %q, want %q", tt.args, got, wantStderr)
