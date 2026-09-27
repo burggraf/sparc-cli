@@ -1507,11 +1507,39 @@ product owner must choose a minimum-OS policy before we spend roughly 12–15 GB
 on a guest image or make any support claim; payload selection, signing, and
 redistribution remain separate approvals.
 
-### Task 12 read-only probe design (2026-09-26)
+### Task 12 — offline public/Auth metadata observer (2026-09-26)
 
-Drafted [`2026-09-26-task12-readonly-public-auth-design.md`](plans/2026-09-26-task12-readonly-public-auth-design.md)
-offline. It proposes a bounded PostgreSQL 17 catalog-only observation of
-`public`/`auth`, identifies extra column/FK metadata that needs locally tested
-fixed queries, and explicitly excludes Auth user data, Auth Admin, Auth config,
-all mutations, and project discovery. It is not a hosted authorization or a
-Task 12 qualification result. No hosted endpoint or credential was accessed.
+Implemented `ObservePublicAuthMetadata` in `internal/database/public_auth.go`.
+It fixes schema selection to `public` and `auth`, runs the existing catalog
+observer plus fixed `pg_attribute`/`pg_constraint` queries in the same verified
+TLS, read-only PostgreSQL 17 transaction, and fails closed above 10,000 rows
+per added query. The result contains only bounded schema/catalog metadata; it
+never reads table rows, Auth values, policy expressions, routine bodies, or
+constraint expressions. Cross-schema FK reporting includes only the other
+endpoint names needed to describe that edge. The generic observer remains
+unchanged for existing callers.
+
+Disposable local PostgreSQL 17 tests cover required-schema refusal, TLS/read-only
+assurance, columns/identity/FK/check shape, row/expression canary exclusion, and
+fail-closed overflow with no partial result. The `hosted`-tagged probe now
+requires the private, duplicate-key-checked, time-bounded
+`SPARC_HOSTED_TEST_CONFIG` contract (`readonly-public-auth-metadata-v1`, exact
+source ref, private connection-URL file, <=30-minute window, $0 cap); it was
+verified offline with the configuration absent and did not connect. No hosted
+endpoint or credential was accessed. The probe does not independently attest
+backend identity; session-pooler username binding is the limit.
+
+Fresh verification passed on local macOS arm64:
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -mod=readonly ./... -count=1 -timeout=240s`
+- `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -mod=readonly -tags=localdemo ./... -count=1 -timeout=300s`
+- Full default race suite: `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test -mod=readonly -race -p=1 ./... -count=1 -timeout=600s`
+- PostgreSQL integration and race suites with `SPARC_TEST_PG_BIN=/opt/homebrew/opt/postgresql@17/bin` and `SPARC_TEST_PG_CLIENT_BIN=/tmp/sparc-r02-openssl35.lXTpLX/relocated-pg-client/bin`, using `go test -mod=readonly -tags=integration ./internal/database -count=1 -timeout=600s` and the same command with `-race`
+- `go test -mod=readonly -tags=hosted ./internal/database -count=1 -timeout=240s` with all hosted config/legacy URL variables explicitly unset; hosted probe skipped, offline parser tests passed
+- Default, integration-tagged, and hosted-tagged `go vet` passed
+- Windows AMD64 integration+hosted database tests cross-compiled; this is not Windows runtime qualification
+
+The observer is local-tested only. Hosted access still requires explicit
+owner approval naming the exact source project ref and this exact read-only
+scope. Auth login, synthetic hosted writes, target work, backup/restore,
+Management/Auth REST access, normal CLI exposure, and production payload
+selection remain outside this authorization.

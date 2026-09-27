@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/burggraf/sparc-cli/internal/credentials"
 )
@@ -30,29 +31,34 @@ func TestParseHostedSupavisorSessionURL(t *testing.T) {
 }
 
 func TestHostedReadOnlySupavisorProbe(t *testing.T) {
-	urlFile := os.Getenv("SPARC_HOSTED_TEST_URL_FILE")
-	projectRef := os.Getenv("SPARC_HOSTED_TEST_PROJECT_REF")
-	if urlFile == "" || projectRef == "" {
-		t.Skip("explicit private URL file and project ref are required")
+	configPath := os.Getenv("SPARC_HOSTED_TEST_CONFIG")
+	if configPath == "" {
+		t.Skip("explicit private, time-bounded authorization config is required")
 	}
-	urlBytes, err := credentials.Input(&credentials.Reference{File: urlFile}, nil, nil)
+	contract, err := loadHostedProbeConfig(configPath, time.Now())
+	if err != nil {
+		t.Fatal("hosted test contract refused")
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), contract.expiresAt)
+	defer cancel()
+	urlBytes, err := credentials.Input(&credentials.Reference{File: contract.connectionURLFile}, nil, nil)
 	if err != nil {
 		t.Fatal("hosted connection input unavailable")
 	}
 	defer clear(urlBytes)
-	params, password, err := parseHostedSupavisorSessionURL(urlBytes, projectRef)
+	params, password, err := parseHostedSupavisorSessionURL(urlBytes, contract.sourceProjectRef)
 	if err != nil {
 		t.Fatal("hosted session route rejected")
 	}
 	defer clear(password)
-	observation, err := ObserveCatalog(context.Background(), params, password, []string{"public"})
+	metadata, err := ObservePublicAuthMetadata(ctx, params, password)
 	if err != nil {
-		t.Fatalf("read-only metadata probe failed: %v", err)
+		t.Fatalf("read-only public/auth metadata probe failed: %v", err)
 	}
-	if !observation.TLS || !observation.ReadOnly || observation.ServerMajor != supportedPostgresMajor || len(observation.Schemas) != 1 || !observation.Schemas[0].Present {
-		t.Fatal("hosted read-only metadata probe did not meet the expected checks")
+	if !metadata.Catalog.TLS || !metadata.Catalog.ReadOnly || metadata.Catalog.ServerMajor != supportedPostgresMajor || len(metadata.Catalog.Schemas) != 2 {
+		t.Fatal("hosted read-only public/auth probe did not meet the expected checks")
 	}
-	t.Log("read-only metadata probe passed: PostgreSQL 17, verified TLS, read-only transaction")
+	t.Logf("read-only public/auth metadata probe passed: PostgreSQL 17, verified TLS, read-only transaction, columns=%d constraints=%d", len(metadata.Columns), len(metadata.Constraints))
 }
 
 func parseHostedSupavisorSessionURL(raw []byte, expectedProjectRef string) (ConnectionParams, []byte, error) {

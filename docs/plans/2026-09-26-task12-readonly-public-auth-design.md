@@ -1,6 +1,6 @@
 # Task 12 — read-only public/Auth inventory design
 
-**Status:** offline proposal for owner review only. This file grants no hosted access. No hosted endpoint, credential, or project was accessed while preparing it.
+**Status:** offline implementation and disposable PostgreSQL 17 test passed; hosted activity remains unauthorized. This file grants no hosted access. No hosted endpoint or credential was accessed.
 
 ## Goal and boundary
 
@@ -10,14 +10,14 @@ Use one caller-supplied project ref and one explicitly supplied database route. 
 
 ## Proposed read-only operations
 
-The live probe, if separately authorized, will use the existing bounded Go `ObserveCatalog` path with exact schema selection `["public", "auth"]`:
+The live probe, if separately authorized, will use the bounded Go `ObservePublicAuthMetadata` path. It fixes selection to `["public", "auth"]` and runs the base catalog inspection plus the shape queries below in one read-only transaction:
 
-- One PostgreSQL 17 connection using explicit host, port, database and user; explicit CA and `sslmode=verify-full`; no ambient PostgreSQL configuration or credential fallback. Refuse unknown/direct-vs-session routes, transaction pooling, wrong CA/hostname, wrong server major, missing TLS, or a transaction not confirmed read-only.
+- One PostgreSQL 17 connection through the qualified Supavisor session-pooler route only: port 5432 and exact `postgres.<expected-project-ref>` username. The hosted harness refuses direct and transaction-pooler routes. Use the explicit embedded Supabase CA with `sslmode=verify-full`; no ambient PostgreSQL configuration or credential fallback. Refuse wrong CA/hostname, wrong server major, missing TLS, or a transaction not confirmed read-only.
 - One read-only transaction with the existing `search_path=pg_catalog`, 8-second statement timeout, 2-second lock timeout and 15-second observer deadline.
 - Observe selected schema names/presence/owners; relation names/owners/kinds, RLS, policy/trigger counts and view-security flags; routine names/owners/identity signatures/kinds/languages plus security-definer and configuration-presence flags; policy names/commands/role identities and expression-presence booleans; selected object ACLs and selected/global default ACLs; database-wide extension names/versions/schemas; the narrow `PUBLIC SELECT` result flags; and bounded `pg_roles`/membership attributes. The current observer reads role/membership and extension metadata cluster-wide; this must be included explicitly in any approval.
 - It does not read table rows, `auth.users` or `auth.identities` values, passwords/hashes, `pg_authid`, policy expressions, routine/trigger bodies, or user-provided SQL. It does not establish independent backend identity or a Supabase baseline.
 
-The current observer does not report column definitions or foreign-key edges. If those are required for the public-to-Auth dependency inventory, first add and locally test a closed catalog-only observer. The planned statements are:
+The existing generic observer does not report column definitions or foreign-key edges. The new public/Auth observer adds closed, catalog-only queries for those facts. The statements below are design sketches; the fixed executable statements are in [`internal/database/public_auth.go`](../../internal/database/public_auth.go), bind only the exact schema array as `$1`, and bind the constant limit-plus-one (`10001`) as `$2`:
 
 ```sql
 -- Relation and column shape only; $1 is exactly ARRAY['public','auth'].
@@ -72,7 +72,7 @@ ORDER BY source_ns.nspname COLLATE "C", source.relname COLLATE "C",
 LIMIT 10001;
 ```
 
-The SQL above is a design sketch, not yet executable production code. The constraint query includes only edges with an endpoint in `public` or `auth`; if the other endpoint is elsewhere, it returns only that endpoint's names needed to describe the edge, not an inventory of that schema. Before any hosted use, implement these as fixed internal queries in the same read-only transaction as the observer, and prove locally that they return only catalog metadata. Enforce each `LIMIT max+1` as a fail-closed bound (never accept a truncated result); refuse malformed identifiers, query errors, timeouts, missing schemas, or unexpected server/route state. Do not print or persist raw rows. The final report should contain only reviewed, bounded findings and omissions.
+The constraint query includes only edges with an endpoint in `public` or `auth`; if the other endpoint is elsewhere, it returns only that endpoint's names needed to describe the edge, not an inventory of that schema. Both query results are capped at 10,000 rows and fail closed on the 10,001st row, malformed metadata, query errors, timeout, missing schemas, or unexpected server/route state. `TestObservePublicAuthMetadataIsBoundedCatalogOnly` passed on a disposable TLS PostgreSQL 17 fixture: it verifies the required schemas, column/identity/FK/check metadata, read-only transaction, and absence of seeded row and expression canaries from the result. This is local evidence only. No raw rows are printed or persisted.
 
 ## Explicit exclusions
 
@@ -89,10 +89,10 @@ The owner must explicitly provide, outside this repository:
 
 ```text
 Source project ref: <exact ref>
-Target project ref: none for this metadata-only phase (or exact ref if separately approved)
-Allowed action: one read-only PostgreSQL catalog observation of public/auth metadata
-Allowed query scope: the existing ObserveCatalog contract above; include cluster-wide roles/memberships
-Additional column/FK queries: only after offline implementation/tests and a separate confirmation
+Target project ref: none
+Allowed action: one read-only PostgreSQL catalog observation using `ObservePublicAuthMetadata`
+Allowed query scope: one Supavisor session-pooler connection, `public`/`auth` catalog metadata, cluster-wide roles/memberships/extensions, and the column/constraint queries above
+Authorization scope marker: `readonly-public-auth-metadata-v1`
 Management/Auth REST endpoints: none
 Table rows, Auth users/identities, hashes, policy expressions, function bodies: forbidden
 Mutations/resources/cost: none; $0
@@ -100,7 +100,21 @@ Execution window: <date/time and duration>
 Credential source: owner-supplied private file only; never copy its value into chat/repository/logs
 ```
 
-If any item is missing or a query would exceed this scope, do not connect. A pass only establishes the listed metadata observation on that project and date. Actual Task 12 still requires separate authorization for a disposable synthetic source/target, fixture writes, Auth password-login checks, restore, and cleanup; this read-only phase cannot be reported as Auth recovery qualification.
+If any item is missing or a query would exceed this scope, do not connect. The hosted-tag test reads `SPARC_HOSTED_TEST_CONFIG` only when explicitly run; the private file must use the exact seven-field v1 contract below, with duplicate/unknown keys refused, a maximum 30-minute window and a zero-dollar cap. The connection URL/password remains in the separately referenced private file. Target fields are not accepted. An environment variable alone is not authorization.
+
+```json
+{
+  "version": 1,
+  "authorization_scope": "readonly-public-auth-metadata-v1",
+  "source_project_ref": "<exact authorized project ref>",
+  "connection_url_file": "/absolute/private/session-url-file",
+  "not_before": "<RFC3339 start>",
+  "expires_at": "<RFC3339 end, within 30 minutes>",
+  "cost_cap_usd": 0
+}
+```
+
+A pass only establishes the listed metadata observation on that project and date. Actual Task 12 still requires separate authorization for a disposable synthetic source/target, fixture writes, Auth password-login checks, restore, and cleanup; this read-only phase cannot be reported as Auth recovery qualification.
 
 ## Stop conditions and evidence
 

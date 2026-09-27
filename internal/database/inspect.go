@@ -183,7 +183,11 @@ func ObserveCatalog(ctx context.Context, params ConnectionParams, password []byt
 }
 
 func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []string) (CatalogObservation, error) {
-	if ctx == nil || config == nil {
+	return observeCatalogWithShape(ctx, config, schemaNames, nil)
+}
+
+func observeCatalogWithShape(ctx context.Context, config *pgx.ConnConfig, schemaNames []string, publicAuth *PublicAuthMetadata) (CatalogObservation, error) {
+	if ctx == nil || config == nil || publicAuth != nil && !isPublicAuthSchemaSelection(schemaNames) {
 		return CatalogObservation{}, ErrCatalogObservation
 	}
 
@@ -293,6 +297,13 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 		rows.Close()
 		if rowErr != nil || len(observation.Schemas) != len(schemaNames) {
 			return observation, contextOr(ctx, ErrCatalogObservation)
+		}
+		if publicAuth != nil {
+			for _, schema := range observation.Schemas {
+				if !schema.Present {
+					return observation, ErrCatalogObservation
+				}
+			}
 		}
 	}
 
@@ -465,6 +476,12 @@ func observeCatalog(ctx context.Context, config *pgx.ConnConfig, schemaNames []s
 	extensionRows.Close()
 	if extensionErr != nil || len(observation.Extensions) > maxObservedExtensions {
 		return observation, contextOr(ctx, ErrCatalogObservation)
+	}
+
+	if publicAuth != nil {
+		if err := observePublicAuthShape(ctx, tx, schemaNames, publicAuth); err != nil {
+			return observation, contextOr(ctx, ErrCatalogObservation)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
