@@ -77,12 +77,14 @@ checks on both platforms; no runtime download or tool installation is used.
 
 `credentials.Input` accepts either one `Reference` or a nil reference for hidden
 input on the supplied terminal. `{"env":"SPARC_MANAGEMENT_TOKEN"}` selects only
-that variable; `{"file":"/absolute/private/credential"}` selects only that file.
-Reference environment names use ASCII `[A-Za-z_][A-Za-z0-9_]*`, at most 128 bytes.
-File references are at most 4096 UTF-8 bytes, absolute, clean, and control-free;
-the private-storage API additionally enforces native safety when reading them.
-Missing/invalid sources fail without trying other variables, files, or prompts.
-No secret value is accepted through this API's arguments as a command-line flag.
+that variable; `{"file":"/absolute/credential"}` selects only that file. The CLI
+resolves selected relative file paths before constructing this reference. Reference
+environment names use ASCII `[A-Za-z_][A-Za-z0-9_]*`, at most 128 bytes. File
+references are at most 4096 UTF-8 bytes, absolute, clean, and control-free. A
+selected credential file must be a readable regular file; its mode is the
+operator's filesystem policy. Missing/invalid sources fail without trying other
+variables, files, or prompts. No secret value is accepted through this API's
+arguments as a command-line flag.
 Environment variables are explicit opt-in inputs, not secure persistence: the
 calling process and inherited child environments may expose them. This package
 does not launch subprocesses, alter the environment, or provide an ambient chain.
@@ -90,8 +92,8 @@ does not launch subprocesses, alter the environment, or provide an ambient chain
 Secrets must contain 1–16384 UTF-8 bytes, with no Unicode control characters or
 Unicode line/paragraph separators. Spaces are preserved, not trimmed. A file may
 end with exactly one LF or CRLF terminator, which is removed before validation;
-environment values are exact (a terminal newline is invalid). File input uses
-`platform.ReadPrivateFile` with a 16386-byte bound to accommodate that terminator.
+environment values are exact (a terminal newline is invalid). File input is
+bounded to 16386 bytes to accommodate that terminator.
 
 A nil reference requires the supplied `*os.File` to pass `term.IsTerminal`;
 redirected input and missing handles fail without reading or printing a prompt.

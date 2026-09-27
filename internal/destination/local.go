@@ -17,7 +17,7 @@ var ErrLocal = errors.New("local archive unavailable")
 // Create verifies encrypted payloads in a private sibling staging directory
 // before manifest creation, then publishes it with native no-replace semantics.
 func Create(finalPath string, inputs []archive.Input, passphrase string) (archive.Manifest, error) {
-	if !validTarget(finalPath) || platform.CheckPrivateDir(filepath.Dir(finalPath)) != nil {
+	if !validTarget(finalPath) || !validParent(filepath.Dir(finalPath)) {
 		return archive.Manifest{}, ErrLocal
 	}
 	var random [16]byte
@@ -48,6 +48,11 @@ func Create(finalPath string, inputs []archive.Input, passphrase string) (archiv
 
 func validTarget(path string) bool {
 	return path != "" && filepath.IsAbs(path) && filepath.Clean(path) == path && filepath.Base(path) != "." && filepath.Base(path) != string(filepath.Separator)
+}
+
+func validParent(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func cleanupStaging(path string) {

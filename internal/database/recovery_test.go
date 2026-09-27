@@ -75,9 +75,9 @@ func TestCaptureRejectsMissingBundledToolBeforeSourceObservation(t *testing.T) {
 	}
 }
 
-func TestCaptureRejectsUnsafeArchiveParentBeforeSourceObservation(t *testing.T) {
+func TestCaptureRejectsMissingArchiveParentBeforeSourceObservation(t *testing.T) {
 	request := captureTestRequest(t)
-	request.ArchivePath = "/private/tmp/sparc-unsafe-archive"
+	request.ArchivePath = filepath.Join(t.TempDir(), "missing", "capture")
 	ops := recoveryTestOps()
 	observed := false
 	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
@@ -85,7 +85,29 @@ func TestCaptureRejectsUnsafeArchiveParentBeforeSourceObservation(t *testing.T) 
 		return CatalogObservation{}, nil
 	}
 	if _, err := captureWith(context.Background(), request, ops); err != ErrCapture || observed {
-		t.Fatalf("unsafe archive parent reached source observation: err=%v observed=%t", err, observed)
+		t.Fatalf("missing archive parent reached source observation: err=%v observed=%t", err, observed)
+	}
+}
+
+func TestCaptureAcceptsOrdinaryArchiveParentBeforeSourceObservation(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(root, "ordinary")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	request := captureTestRequest(t)
+	request.ArchivePath = filepath.Join(parent, "capture")
+	ops := recoveryTestOps()
+	observed := false
+	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
+		observed = true
+		return CatalogObservation{}, ErrCapture
+	}
+	if _, err := captureWith(context.Background(), request, ops); err != ErrCapture || !observed {
+		t.Fatalf("ordinary archive parent was rejected before source observation: err=%v observed=%t", err, observed)
 	}
 }
 

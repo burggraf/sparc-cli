@@ -44,7 +44,7 @@ func TestCreatePublishesVerifiedPrivateArchiveWithoutClobber(t *testing.T) {
 	}
 }
 
-func TestCreateRejectsNonPrivateParentWithoutSideEffects(t *testing.T) {
+func TestCreateAcceptsOrdinaryWritableParent(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -54,11 +54,11 @@ func TestCreateRejectsNonPrivateParentWithoutSideEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := filepath.Join(parent, "backup")
-	if _, err := Create(final, []archive.Input{{Key: "database/schema.sql", Scope: "database", Source: strings.NewReader("schema")}}, "passphrase"); err == nil {
-		t.Fatal("Create() accepted a non-private parent")
+	if _, err := Create(final, []archive.Input{{Key: "database/schema.sql", Scope: "database", Source: strings.NewReader("schema")}}, "passphrase"); err != nil {
+		t.Fatalf("Create() rejected an ordinary writable parent: %v", err)
 	}
-	if entries, err := os.ReadDir(parent); err != nil || len(entries) != 0 {
-		t.Fatalf("parent changed: %v, %v", entries, err)
+	if _, err := archive.Verify(final, "passphrase"); err != nil {
+		t.Fatalf("archive in ordinary parent did not verify: %v", err)
 	}
 }
 

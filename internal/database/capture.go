@@ -13,7 +13,6 @@ import (
 	"github.com/burggraf/sparc-cli/internal/archive"
 	"github.com/burggraf/sparc-cli/internal/credentials"
 	"github.com/burggraf/sparc-cli/internal/destination"
-	"github.com/burggraf/sparc-cli/internal/platform"
 	"github.com/burggraf/sparc-cli/internal/tools"
 )
 
@@ -124,8 +123,11 @@ func validRecoveryConnection(params ConnectionParams, password []byte) bool {
 }
 
 func validRecoveryArchivePath(path string) bool {
-	return path != "" && filepath.IsAbs(path) && filepath.Clean(path) == path && filepath.Base(path) != "." && filepath.Base(path) != string(filepath.Separator) &&
-		platform.CheckPrivateDir(filepath.Dir(path)) == nil
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || filepath.Base(path) == "." || filepath.Base(path) == string(filepath.Separator) {
+		return false
+	}
+	info, err := os.Stat(filepath.Dir(path))
+	return err == nil && info.IsDir()
 }
 
 func validDatabaseDumpManifest(manifest archive.Manifest) bool {

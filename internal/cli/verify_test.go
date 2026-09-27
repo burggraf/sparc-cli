@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,6 +24,26 @@ func TestRunVerifiesIncompleteArchiveOffline(t *testing.T) {
 	code := Run([]string{"verify", "--archive", archiveDir, "--passphrase-file", passphraseFile}, strings.NewReader(""), &stdout, &stderr)
 	if code != 3 || stdout.String() != "Integrity: passed\nCapture declaration: incomplete\nComponents: 1\n" || stderr.Len() != 0 {
 		t.Fatalf("verify = code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunVerifyResolvesRelativePaths(t *testing.T) {
+	archiveDir, passphraseFile := makeVerifyFixture(t)
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveDir, err = filepath.Rel(workingDir, archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	passphraseFile, err = filepath.Rel(workingDir, passphraseFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"verify", "--archive", archiveDir, "--passphrase-file", passphraseFile}, strings.NewReader(""), &stdout, &stderr); code != 3 || stderr.Len() != 0 {
+		t.Fatalf("relative verify = code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
 }
 

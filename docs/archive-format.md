@@ -44,15 +44,17 @@ truncation, or ciphertext corruption must fail. Encryption does **not**
 authenticate the sender or establish payload provenance. The passphrase and
 scrypt state are ordinary process memory; no secure-memory erasure is claimed.
 
-`destination.Create` requires an absolute final path under an already-existing
-private local parent directory. It creates a private random sibling staging
-folder, and the native no-replace directory publisher atomically publishes the
-finished folder. Ordinary shared folders are refused. Local external/removable
+`destination.Create` receives an absolute final path from the CLI, which resolves
+relative input paths from the current directory. Its parent must already exist
+and be usable for archive creation; a normal user-writable directory such as
+`0755` is accepted. It creates a private random sibling staging folder, and the
+native no-replace directory publisher atomically publishes the finished folder.
+Directories writable by other users remain refused. Local external/removable
 volumes may work when their parent passes native checks; network filesystems and
 UNC paths are refused by current native boundaries. Interrupted staging cleanup
 is best-effort, and a crash may leave ciphertext in a private staging folder.
 
-`archive.Verify` requires a private archive directory, an authenticated bounded
+`archive.Verify` requires the private archive directory SPARC created, an authenticated bounded
 manifest, exactly the listed payload files plus `manifest.age`, and each
 payload's authenticated EOF, declared length, and digest. Extra files, missing
 payloads, symlinks, wrong passphrases, and corruption are refused. It executes

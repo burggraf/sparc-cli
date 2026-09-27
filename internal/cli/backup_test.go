@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,6 +44,46 @@ func TestRunBackupBuildsIncompleteLocalDatabaseArchive(t *testing.T) {
 	}
 	if strings.Contains(stdout.String()+stderr.String(), "archive-location-canary") || strings.Contains(stdout.String()+stderr.String(), "db-password-canary") || strings.Contains(stdout.String()+stderr.String(), "archive-passphrase-canary") {
 		t.Fatal("backup output leaked sensitive input")
+	}
+}
+
+func TestRunBackupResolvesRelativePaths(t *testing.T) {
+	root := t.TempDir()
+	urlPath := filepath.Join(root, ".env.db")
+	if err := os.WriteFile(urlPath, []byte("postgresql://postgres.abcdefghijklmnopqrst:db-password-canary@aws-1-us-east-2.pooler.supabase.com:5432/postgres"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	passphrasePath := filepath.Join(root, ".passphrase")
+	if err := os.WriteFile(passphrasePath, []byte("archive-passphrase-canary"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
+
+	var got database.CaptureRequest
+	ops := backupOps{
+		input: credentials.Input, parse: database.ParseSupavisorSessionURL,
+		capture: func(_ context.Context, request database.CaptureRequest) (archive.Manifest, error) {
+			got = request
+			return archive.Manifest{}, nil
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runBackupWith([]string{"--project-ref", "abcdefghijklmnopqrst", "--database-url-file", ".env.db", "--archive", "tmp/test", "--passphrase-file", ".passphrase"}, strings.NewReader(""), &stdout, &stderr, ops); code != 3 || stderr.Len() != 0 {
+		t.Fatalf("backup = code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ArchivePath != filepath.Join(workingDir, "tmp", "test") {
+		t.Fatalf("archive path = %q", got.ArchivePath)
 	}
 }
 

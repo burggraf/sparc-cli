@@ -119,7 +119,8 @@ func localPrivateParentWith(path string, statfs func(int, *unix.Statfs_t) error,
 	if err != nil {
 		return false
 	}
-	valid := privateFD(fd, true)
+	var directory unix.Stat_t
+	valid := unix.Fstat(fd, &directory) == nil && directory.Mode&unix.S_IFMT == unix.S_IFDIR
 	var filesystem unix.Statfs_t
 	statErr := statfs(fd, &filesystem)
 	closeErr := close(fd)

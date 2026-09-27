@@ -42,6 +42,17 @@ func TestReferenceValidate(t *testing.T) {
 	}
 }
 
+func TestInputReadsReadableRegularFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "database-url")
+	if err := os.WriteFile(path, []byte("postgresql://example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Input(&Reference{File: path}, nil, io.Discard)
+	if err != nil || string(got) != "postgresql://example" {
+		t.Fatalf("readable file = %q, %v", got, err)
+	}
+}
+
 func TestInputExplicitSources(t *testing.T) {
 	t.Setenv("SPARC_TEST_SECRET", "  café 日本語  ")
 	t.Setenv("SPARC_AMBIENT_SECRET", "secret-canary")

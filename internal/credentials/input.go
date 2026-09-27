@@ -11,7 +11,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/burggraf/sparc-cli/internal/platform"
 	"golang.org/x/term"
 )
 
@@ -63,6 +62,24 @@ func secret(value []byte) ([]byte, error) {
 	return value, nil
 }
 
+func readSecretFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, ErrInput
+	}
+	info, statErr := file.Stat()
+	if statErr != nil || !info.Mode().IsRegular() || info.Size() > maxSecretBytes+2 {
+		_ = file.Close()
+		return nil, ErrInput
+	}
+	value, readErr := io.ReadAll(io.LimitReader(file, maxSecretBytes+3))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || len(value) > maxSecretBytes+2 {
+		return nil, ErrInput
+	}
+	return value, nil
+}
+
 // Input never reads stdin when a reference is supplied, and never falls back
 // from a missing explicit source to a prompt or an ambient credential.
 func Input(ref *Reference, stdin *os.File, stderr io.Writer) ([]byte, error) {
@@ -77,7 +94,7 @@ func Input(ref *Reference, stdin *os.File, stderr io.Writer) ([]byte, error) {
 			}
 			return secret([]byte(value))
 		}
-		value, err := platform.ReadPrivateFile(ref.File, maxSecretBytes+2)
+		value, err := readSecretFile(ref.File)
 		if err != nil {
 			return nil, ErrInput
 		}

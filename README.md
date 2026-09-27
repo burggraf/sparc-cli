@@ -15,22 +15,22 @@ sparc licenses
 sparc restore # unavailable
 ```
 
-`help`, `version`, `verify`, and `licenses` do not access the network. Verification and backup passphrases are requested without terminal echo, or can be read from an explicitly selected private file.
+`help`, `version`, `verify`, and `licenses` do not access the network. Verification and backup passphrases are requested without terminal echo, or can be read from an explicitly selected file.
 
 ## Create a local encrypted database archive
 
-`backup` needs a project ref, a private file containing the qualified Supavisor **session-pooler** URL (port 5432), and a new archive directory below an existing private parent. The macOS arm64 executable contains PostgreSQL 17.11 `pg_dump` and its required runtime libraries; SPARC extracts and validates them in its private cache. No Homebrew PostgreSQL, OpenSSL install, or `PATH` lookup is required. The URL/password never enter argv.
+`backup` needs a project ref, a readable file containing the qualified Supavisor **session-pooler** URL (port 5432), and a new archive directory below an existing local directory you can write to. Paths may be relative to the current directory. The macOS arm64 executable contains PostgreSQL 17.11 `pg_dump` and its required runtime libraries; SPARC extracts and validates them in its private cache. No Homebrew PostgreSQL, OpenSSL install, or `PATH` lookup is required. The URL/password never enter argv.
 
 ```sh
-mkdir -m 700 "$HOME/sparc-backups"
-ARCHIVE="$HOME/sparc-backups/database-$(date +%Y%m%d-%H%M%S)"
+mkdir -p backups
+ARCHIVE="./backups/database-$(date +%Y%m%d-%H%M%S)"
 ./sparc backup \
   --project-ref YOUR_PROJECT_REF \
-  --database-url-file "$HOME/Library/Application Support/sparc/hosted-session-url" \
+  --database-url-file .env.db \
   --archive "$ARCHIVE"
 ```
 
-The command prompts for an archive passphrase without echo unless you add `--passphrase-file /absolute/private/file`. It prints `Database archive created.` and exits **3**, meaning the encrypted archive is intact but deliberately incomplete. Run `./sparc verify --archive "$ARCHIVE"` with the same passphrase to verify it offline. A hosted backup reads database contents and needs the operator's authorization. Remote folders are not supported yet. Run `./sparc licenses` to print the bundled PostgreSQL and OpenSSL notices.
+The command prompts for an archive-encryption passphrase without echo unless you add `--passphrase-file .passphrase`. It prints `Database archive created.` and exits **3**, meaning the encrypted archive is intact but deliberately incomplete. Run `./sparc verify --archive "$ARCHIVE"` with the same passphrase to verify it offline. A hosted backup reads database contents and needs the operator's authorization. Remote folders are not supported yet. Run `./sparc licenses` to print the bundled PostgreSQL and OpenSSL notices.
 
 ## Try developer-only backup/restore
 

@@ -12,8 +12,9 @@ import (
 
 const verifyHelpText = `Usage: sparc verify --archive DIR [--passphrase-file FILE]
 
-Verifies encrypted archive integrity without network access. In a terminal, the
-passphrase is requested without echo unless --passphrase-file is supplied.
+Verifies encrypted archive integrity without network access. Relative paths are
+resolved from the current directory. In a terminal, the passphrase is requested
+without echo unless --passphrase-file is supplied.
 `
 
 func runVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -22,7 +23,7 @@ func runVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var archiveDir, passphraseFile string
 	var help bool
 	flags.StringVar(&archiveDir, "archive", "", "encrypted archive directory")
-	flags.StringVar(&passphraseFile, "passphrase-file", "", "private file containing the passphrase")
+	flags.StringVar(&passphraseFile, "passphrase-file", "", "file containing the passphrase")
 	flags.BoolVar(&help, "help", false, "show help")
 	flags.BoolVar(&help, "h", false, "show help")
 	if flags.Parse(args) != nil || flags.NArg() != 0 {
@@ -36,8 +37,17 @@ func runVerify(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, "sparc: invalid verify arguments\n")
 		return 2
 	}
+	var err error
+	if archiveDir, err = resolvePath(archiveDir); err != nil {
+		fmt.Fprint(stderr, "sparc: invalid verify arguments\n")
+		return 2
+	}
 	var reference *credentials.Reference
 	if passphraseFile != "" {
+		if passphraseFile, err = resolvePath(passphraseFile); err != nil {
+			fmt.Fprint(stderr, "sparc: invalid verify arguments\n")
+			return 2
+		}
 		reference = &credentials.Reference{File: passphraseFile}
 	}
 	stdinFile, _ := stdin.(*os.File)

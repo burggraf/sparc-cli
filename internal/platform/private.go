@@ -114,8 +114,7 @@ func publishPrivateDirWith(staging, destination string, publish func(string, str
 	if !validPath(staging) || !validPath(destination) || staging == destination || filepath.Dir(staging) != filepath.Dir(destination) {
 		return false, ErrPrivateStorage
 	}
-	parent := filepath.Dir(staging)
-	if CheckPrivateDir(parent) != nil || CheckPrivateDir(staging) != nil {
+	if CheckPrivateDir(staging) != nil {
 		return false, ErrPrivateStorage
 	}
 	published, err := publish(staging, destination)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/burggraf/sparc-cli/internal/archive"
 	"github.com/burggraf/sparc-cli/internal/credentials"
@@ -16,8 +17,10 @@ const backupHelpText = `Usage: sparc backup --project-ref REF --database-url-fil
 
 Creates an encrypted local database archive using the PostgreSQL 17 client
 bundled in the macOS arm64 application. No separate PostgreSQL installation is
-required. FILE and DIR must be absolute private paths. The database URL is read
-only from FILE; it is never accepted in argv. The archive is marked incomplete:
+required. Relative paths are resolved from the current directory. FILE must be
+readable; DIR must be new beneath an existing writable local directory. The
+database URL is read only from FILE; it is never accepted in argv. The archive
+is marked incomplete:
 Auth, Storage, project configuration, roles, and provider-managed services are
 not included.
 `
@@ -40,9 +43,9 @@ func runBackupWith(args []string, stdin io.Reader, stdout, stderr io.Writer, ops
 	var projectRef, databaseURLFile, archiveDir, passphraseFile string
 	var help bool
 	flags.StringVar(&projectRef, "project-ref", "", "Supabase project ref")
-	flags.StringVar(&databaseURLFile, "database-url-file", "", "private session-pooler URL file")
-	flags.StringVar(&archiveDir, "archive", "", "new private local archive directory")
-	flags.StringVar(&passphraseFile, "passphrase-file", "", "private file containing archive passphrase")
+	flags.StringVar(&databaseURLFile, "database-url-file", "", "session-pooler URL file")
+	flags.StringVar(&archiveDir, "archive", "", "new local archive directory")
+	flags.StringVar(&passphraseFile, "passphrase-file", "", "file containing archive passphrase")
 	flags.BoolVar(&help, "help", false, "show help")
 	flags.BoolVar(&help, "h", false, "show help")
 	if flags.Parse(args) != nil || flags.NArg() != 0 {
@@ -55,6 +58,21 @@ func runBackupWith(args []string, stdin io.Reader, stdout, stderr io.Writer, ops
 	if projectRef == "" || databaseURLFile == "" || archiveDir == "" || ops.input == nil || ops.parse == nil || ops.capture == nil {
 		fmt.Fprint(stderr, "sparc: invalid backup arguments\n")
 		return 2
+	}
+	var err error
+	if databaseURLFile, err = resolvePath(databaseURLFile); err != nil {
+		fmt.Fprint(stderr, "sparc: invalid backup arguments\n")
+		return 2
+	}
+	if archiveDir, err = resolvePath(archiveDir); err != nil {
+		fmt.Fprint(stderr, "sparc: invalid backup arguments\n")
+		return 2
+	}
+	if passphraseFile != "" {
+		if passphraseFile, err = resolvePath(passphraseFile); err != nil {
+			fmt.Fprint(stderr, "sparc: invalid backup arguments\n")
+			return 2
+		}
 	}
 
 	urlBytes, err := ops.input(&credentials.Reference{File: databaseURLFile}, nil, stderr)
@@ -92,6 +110,8 @@ func runBackupWith(args []string, stdin io.Reader, stdout, stderr io.Writer, ops
 	}
 	return 3
 }
+
+func resolvePath(path string) (string, error) { return filepath.Abs(path) }
 
 func clearBytes(value []byte) {
 	for i := range value {
