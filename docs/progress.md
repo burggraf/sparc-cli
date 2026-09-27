@@ -118,19 +118,28 @@ localdemo-tagged full suites, full PG17.9 integration suite, race-enabled
 candidate-client two-cluster test, default/integration vet, Windows AMD64 and
 Darwin arm64 integration test cross-compiles, gofmt, and `git diff --check`.
 Neither the candidate nor its 17.9 test servers are hosted qualification.
-No source, native payload, or test dump was added to Git. A 2026-09-26 local
-check found sampled Homebrew OpenSSL static-library objects also encode
-`minos 27.0`, so static-linking is not a proven solution for lowering the
-candidate's OS floor. No additional dependency source was acquired; see R02.
+No source, native payload, or test dump was added to Git. After separate
+approval, a private OpenSSL 3.5.8 LTS source build matched the official SHA-256
+sidecar (its downloaded PGP signature was not verified). PostgreSQL's upstream
+libpq check rejected static OpenSSL references to `_atexit` and
+`_pthread_exit`, so the local PG17.11 experiment used shared libraries instead.
+The five arm64 runtime Mach-O files encode `minos 13.0`; relative load paths
+survived relocation and synthetic TLS/restore tests with the original build
+prefixes hidden. Compiled OpenSSL/libpq config directories still contain those
+private prefixes, and runtime was tested only on macOS 27. This is not minimum-OS
+qualification or release approval. Fresh default, full integration, race, and
+vet suites passed. No further hosted access, backup, or restore occurred; see
+R02 for the provenance and limitations.
 
 ### Open blockers
 
 Ad-hoc signing proves byte/signature preservation only—not Developer ID,
 notarization, Gatekeeper, or public trust. Denied-write and browser-quarantine
-observations are pending. The macOS arm64 candidate's absolute library paths
-and current minimum OS block release; other architecture inventories, complete
-notices, signing, hosted recipe and Windows trust remain open. Adjacent tools
-remain control/fallback only and require owner approval before selection.
+observations are pending. The local macOS arm64 experiment has no runtime proof
+on its exploratory `minos 13.0`, retains private compiled config paths, and is
+unsigned/unapproved; other architecture inventories, complete notices,
+redistribution, signing, hosted recipe and Windows trust remain open. Adjacent
+tools remain control/fallback only and require owner approval before selection.
 
 ## Task 03 — Support profile and coverage report contract
 
