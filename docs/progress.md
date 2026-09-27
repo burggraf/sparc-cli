@@ -1590,3 +1590,25 @@ PostgreSQL 17 tools/database integration, including its race run, with the
 private candidate client; default and integration `go vet`; a Windows AMD64 CLI
 test cross-compile; and the localdemo rehearsal above. Cross-compilation is not
 Windows runtime qualification.
+
+### Correction: bundled PostgreSQL client replaces the external-client prototype
+
+The preceding CLI section records the first prototype and is superseded: its
+`--pg-client-bin` requirement did not meet the self-contained app requirement.
+The owner has now explicitly approved embedding PostgreSQL 17.11 `pg_dump`,
+`pg_restore`, `psql`, libpq, and the required OpenSSL 3.5.8 runtime libraries in
+the macOS arm64 app, with provenance and license notices. The normal CLI no
+longer has `--pg-client-bin` or any runtime `PATH`/Homebrew client dependency.
+It verifies/extracts the embedded package to a private cache and exposes
+`sparc licenses` for notices.
+
+TDD: the new bundled-client execution and CLI-notice tests failed before the
+payload/command existed, then passed after integration. Integration tests now
+run the embedded clients with `PATH` empty, verify TLS rejects an untrusted CA
+and hostname mismatch, and exercise encrypted capture/recovery on disposable
+PostgreSQL 17 clusters. Provenance and all payload hashes are in
+`build/clients/manifest.json`; environment/runtime limits are in
+`docs/research/R02-client-provenance.md`. Only macOS 27 arm64 runtime was tested;
+Mach-O `minos 13.0` is not a macOS 13 support claim. Other platform payloads,
+signing, and notarization remain open. No hosted database backup was performed;
+client-bundling approval did not authorize hosted data export.

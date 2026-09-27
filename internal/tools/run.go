@@ -126,27 +126,58 @@ func defaultRunOps() runOps {
 	}
 }
 
-// Run locates only a compiled-in trusted payload. Production inventory is
-// currently empty, so it returns ErrPayloadUnavailable until payload approval.
+// PrepareProductionPayload privately extracts and validates the compiled-in tool
+// package before any source connection is attempted.
+func PrepareProductionPayload(ctx context.Context, tool Tool) error {
+	_, _, _, err := prepareProductionPayload(ctx, tool)
+	return err
+}
+
+func prepareProductionPayload(ctx context.Context, tool Tool) (packageManifest, string, string, error) {
+	if ctx == nil {
+		return packageManifest{}, "", "", ErrRun
+	}
+	target := payloadTarget{OS: runtime.GOOS, Architecture: runtime.GOARCH}
+	manifest, err := lookupProductionPayload(tool, supportedPostgreSQLMajor, target)
+	if err != nil {
+		return packageManifest{}, "", "", err
+	}
+	payload, ok := productionPayloadArchives[target]
+	if !ok {
+		return packageManifest{}, "", "", ErrInvalidPayload
+	}
+	locations, err := platform.NativeLocations()
+	if err != nil || ensurePrivateCacheRoot(locations.CacheDir) != nil {
+		return packageManifest{}, "", "", ErrRun
+	}
+	packagePath, err := preparePayload(ctx, locations.CacheDir, bytes.NewReader(payload), manifest)
+	if err != nil {
+		return packageManifest{}, "", "", ErrRun
+	}
+	return manifest, packagePath, locations.CacheDir, nil
+}
+
+func ensurePrivateCacheRoot(path string) error {
+	if platform.CheckPrivateDir(path) == nil {
+		return nil
+	}
+	if platform.CreatePrivateDir(path) == nil || platform.CheckPrivateDir(path) == nil {
+		return nil
+	}
+	return ErrRun
+}
+
+// Run executes a typed operation using only a compiled-in trusted payload.
 func Run(ctx context.Context, request RunRequest) (RunResult, error) {
 	if ctx == nil || request.testHostAddr != "" || !validRunRequest(request) {
 		return RunResult{}, ErrRun
 	}
 	return withRunSink(request, func(request RunRequest, sink *runSink) (RunResult, error) {
-		target := payloadTarget{OS: runtime.GOOS, Architecture: runtime.GOARCH}
-		manifest, err := lookupProductionPayload(request.Tool, supportedPostgreSQLMajor, target)
+		manifest, packagePath, cacheRoot, err := prepareProductionPayload(ctx, request.Tool)
 		if err != nil {
 			return RunResult{}, err
 		}
-		locations, err := platform.NativeLocations()
-		if err != nil {
-			return RunResult{}, ErrRun
-		}
-		id, err := packageID(manifest)
-		if err != nil {
-			return RunResult{}, ErrRun
-		}
-		return runWithSink(ctx, request, sink, manifest, filepath.Join(locations.CacheDir, payloadCacheDirectory, id), locations.CacheDir, defaultRunOps())
+		return runWithSink(ctx, request, sink, manifest, packagePath, cacheRoot, defaultRunOps())
 	})
 }
 
@@ -775,6 +806,9 @@ func runArguments(request RunRequest) ([]string, error) {
 
 func runEnvironment(home, temp, config, passfile, rootCert, testHostAddr string) []string {
 	environment := []string{"HOME=" + home, "TMPDIR=" + temp, "TMP=" + temp, "TEMP=" + temp, "XDG_CONFIG_HOME=" + config, "LANG=C", "LC_ALL=C"}
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		environment = append(environment, "OPENSSL_CONF=/dev/null", "OPENSSL_MODULES="+config)
+	}
 	if passfile != "" {
 		environment = append(environment, "PGPASSFILE="+passfile, "PGSSLMODE=verify-full", "PGSSLROOTCERT="+rootCert)
 	}

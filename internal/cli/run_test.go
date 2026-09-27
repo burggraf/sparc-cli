@@ -28,13 +28,13 @@ func TestRunCommandContract(t *testing.T) {
 			name:       "help",
 			args:       []string{"help"},
 			wantCode:   0,
-			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Create an encrypted local database archive\n  verify   Verify encrypted archive integrity offline\n  restore  Restore a backup (not yet available)\n\nRun \"sparc verify --help\" for verification options.\n",
+			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Create an encrypted local database archive\n  verify   Verify encrypted archive integrity offline\n  restore  Restore a backup (not yet available)\n  licenses Show bundled third-party software licenses\n\nRun \"sparc verify --help\" for verification options.\n",
 		},
 		{
 			name:       "help flag",
 			args:       []string{"--help"},
 			wantCode:   0,
-			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Create an encrypted local database archive\n  verify   Verify encrypted archive integrity offline\n  restore  Restore a backup (not yet available)\n\nRun \"sparc verify --help\" for verification options.\n",
+			wantStdout: "Usage: sparc <command>\n\nCommands:\n  backup   Create an encrypted local database archive\n  verify   Verify encrypted archive integrity offline\n  restore  Restore a backup (not yet available)\n  licenses Show bundled third-party software licenses\n\nRun \"sparc verify --help\" for verification options.\n",
 		},
 		{
 			name:       "version",

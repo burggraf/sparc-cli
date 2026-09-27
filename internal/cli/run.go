@@ -4,6 +4,8 @@ package cli
 import (
 	"fmt"
 	"io"
+
+	"github.com/burggraf/sparc-cli/internal/tools"
 )
 
 const helpText = `Usage: sparc <command>
@@ -12,6 +14,7 @@ Commands:
   backup   Create an encrypted local database archive
   verify   Verify encrypted archive integrity offline
   restore  Restore a backup (not yet available)
+  licenses Show bundled third-party software licenses
 
 Run "sparc verify --help" for verification options.
 `
@@ -47,6 +50,12 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runVerify(args[1:], stdin, stdout, stderr)
 	case "backup":
 		return runBackup(args[1:], stdin, stdout, stderr)
+	case "licenses":
+		if len(args) != 1 {
+			fmt.Fprint(stderr, "sparc: this command takes no arguments\nRun \"sparc help\" for usage.\n")
+			return 2
+		}
+		return writeOutput(stdout, stderr, tools.ThirdPartyNotices())
 	case "restore":
 		if len(args) != 1 {
 			fmt.Fprint(stderr, "sparc: this command takes no arguments in this scaffold\nRun \"sparc help\" for usage.\n")

@@ -31,11 +31,11 @@ func Restore(ctx context.Context, request RestoreRequest) error {
 func restoreWith(ctx context.Context, request RestoreRequest, ops recoveryOps) error {
 	if ctx == nil || !validRecoveryConnection(request.Target, request.TargetPassword) || !validRecoveryArchivePath(request.ArchivePath) ||
 		archive.ValidatePassphrase(request.ArchivePassphrase) != nil || !validEmptyTargetScope(request.EmptyScope) ||
-		ops.verify == nil || ops.rootCert == nil || ops.observe == nil || ops.open == nil || ops.run == nil {
+		ops.verify == nil || ops.rootCert == nil || ops.observe == nil || ops.prepareTool == nil || ops.open == nil || ops.run == nil {
 		return ErrRestore
 	}
 	manifest, err := ops.verify(request.ArchivePath, request.ArchivePassphrase)
-	if err != nil || !validDatabaseDumpManifest(manifest) {
+	if err != nil || !validDatabaseDumpManifest(manifest) || ops.prepareTool(ctx, tools.PGRestore) != nil {
 		return ErrRestore
 	}
 	component := manifest.Components[0]

@@ -16,13 +16,13 @@ import (
 
 func TestRunBackupBuildsIncompleteLocalDatabaseArchive(t *testing.T) {
 	urlFile, passphraseFile := makeBackupInputFiles(t)
-	var gotBin, gotPassword, gotPassphrase string
+	var gotPassword, gotPassphrase string
 	var gotRequest database.CaptureRequest
 	ops := backupOps{
 		input: credentials.Input,
 		parse: database.ParseSupavisorSessionURL,
-		capture: func(_ context.Context, clientBin string, request database.CaptureRequest) (archive.Manifest, error) {
-			gotBin, gotRequest = clientBin, request
+		capture: func(_ context.Context, request database.CaptureRequest) (archive.Manifest, error) {
+			gotRequest = request
 			gotPassword, gotPassphrase = string(request.SourcePassword), request.ArchivePassphrase
 			return archive.Manifest{}, nil
 		},
@@ -32,15 +32,14 @@ func TestRunBackupBuildsIncompleteLocalDatabaseArchive(t *testing.T) {
 		"--project-ref", "abcdefghijklmnopqrst",
 		"--database-url-file", urlFile,
 		"--archive", "/private/archive-location-canary",
-		"--pg-client-bin", "/private/pg17/bin",
 		"--passphrase-file", passphraseFile,
 	}, strings.NewReader(""), &stdout, &stderr, ops)
 	if code != 3 || stdout.String() != "Database archive created.\nCapture declaration: incomplete.\n" || stderr.Len() != 0 {
 		t.Fatalf("backup = code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
-	if gotBin != "/private/pg17/bin" || gotRequest.Source.ExpectedProjectRef != "abcdefghijklmnopqrst" || gotRequest.Source.Host != "aws-1-us-east-2.pooler.supabase.com" ||
+	if gotRequest.Source.ExpectedProjectRef != "abcdefghijklmnopqrst" || gotRequest.Source.Host != "aws-1-us-east-2.pooler.supabase.com" ||
 		gotRequest.ArchivePath != "/private/archive-location-canary" || gotPassword != "db-password-canary" || gotPassphrase != "archive-passphrase-canary" {
-		t.Fatalf("capture request = %#v, client bin = %q", gotRequest, gotBin)
+		t.Fatalf("capture request = %#v", gotRequest)
 	}
 	if strings.Contains(stdout.String()+stderr.String(), "archive-location-canary") || strings.Contains(stdout.String()+stderr.String(), "db-password-canary") || strings.Contains(stdout.String()+stderr.String(), "archive-passphrase-canary") {
 		t.Fatal("backup output leaked sensitive input")
@@ -55,7 +54,7 @@ func TestRunBackupRejectsInvalidInputWithoutCapture(t *testing.T) {
 		parse: func([]byte, string) (database.ConnectionParams, []byte, error) {
 			return database.ConnectionParams{}, nil, database.ErrConnectionParameters
 		},
-		capture: func(context.Context, string, database.CaptureRequest) (archive.Manifest, error) {
+		capture: func(context.Context, database.CaptureRequest) (archive.Manifest, error) {
 			called = true
 			return archive.Manifest{}, nil
 		},
@@ -66,8 +65,8 @@ func TestRunBackupRejectsInvalidInputWithoutCapture(t *testing.T) {
 		want string
 	}{
 		{"missing flags", nil, "sparc: invalid backup arguments\n"},
-		{"extra argument", []string{"--project-ref", "abcdefghijklmnopqrst", "--database-url-file", urlFile, "--archive", "/private/archive", "--pg-client-bin", "/private/pg/bin", "--passphrase-file", passphraseFile, "extra-canary"}, "sparc: invalid backup arguments\n"},
-		{"invalid database URL", []string{"--project-ref", "abcdefghijklmnopqrst", "--database-url-file", urlFile, "--archive", "/private/archive", "--pg-client-bin", "/private/pg/bin", "--passphrase-file", passphraseFile}, "sparc: unable to read database connection\n"},
+		{"extra argument", []string{"--project-ref", "abcdefghijklmnopqrst", "--database-url-file", urlFile, "--archive", "/private/archive", "--passphrase-file", passphraseFile, "extra-canary"}, "sparc: invalid backup arguments\n"},
+		{"invalid database URL", []string{"--project-ref", "abcdefghijklmnopqrst", "--database-url-file", urlFile, "--archive", "/private/archive", "--passphrase-file", passphraseFile}, "sparc: unable to read database connection\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			called = false
@@ -87,12 +86,12 @@ func TestRunBackupReportsCaptureFailureWithoutLeakingInput(t *testing.T) {
 	ops := backupOps{
 		input: credentials.Input,
 		parse: database.ParseSupavisorSessionURL,
-		capture: func(context.Context, string, database.CaptureRequest) (archive.Manifest, error) {
+		capture: func(context.Context, database.CaptureRequest) (archive.Manifest, error) {
 			return archive.Manifest{}, errors.New("capture secret-canary")
 		},
 	}
 	var stdout, stderr bytes.Buffer
-	code := runBackupWith([]string{"--project-ref", "abcdefghijklmnopqrst", "--database-url-file", urlFile, "--archive", "/private/archive", "--pg-client-bin", "/private/pg/bin", "--passphrase-file", passphraseFile}, strings.NewReader(""), &stdout, &stderr, ops)
+	code := runBackupWith([]string{"--project-ref", "abcdefghijklmnopqrst", "--database-url-file", urlFile, "--archive", "/private/archive", "--passphrase-file", passphraseFile}, strings.NewReader(""), &stdout, &stderr, ops)
 	if code != 1 || stdout.Len() != 0 || stderr.String() != "sparc: database backup failed\n" || strings.Contains(stderr.String(), "secret-canary") {
 		t.Fatalf("backup failure = code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
@@ -102,6 +101,21 @@ func TestRunBackupHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := Run([]string{"backup", "--help"}, strings.NewReader(""), &stdout, &stderr); code != 0 || stdout.String() != backupHelpText || stderr.Len() != 0 {
 		t.Fatalf("backup help = code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "--pg-client-bin") {
+		t.Fatal("backup help requires an external PostgreSQL installation")
+	}
+}
+
+func TestRunThirdPartyNotices(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"licenses"}, strings.NewReader(""), &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("licenses = code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+	for _, notice := range []string{"PostgreSQL", "OpenSSL", "Apache License", "Henry Spencer"} {
+		if !strings.Contains(stdout.String(), notice) {
+			t.Fatalf("third-party notices omit %q", notice)
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -339,7 +340,7 @@ func TestPayloadSelectionValidatesSelectedCompiledManifest(t *testing.T) {
 	}
 }
 
-func TestPayloadProductionInventoryIsEmptyAndHasNoFallback(t *testing.T) {
+func TestPayloadProductionInventoryHasOnlyCompiledTargetAndNoFallback(t *testing.T) {
 	directory := t.TempDir()
 	for _, name := range []string{"pg_dump", "pg_restore", "psql"} {
 		if err := os.WriteFile(filepath.Join(directory, name), []byte("secret-canary"), 0o700); err != nil {
@@ -358,9 +359,15 @@ func TestPayloadProductionInventoryIsEmptyAndHasNoFallback(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(old) })
 	for _, target := range []payloadTarget{{OS: "darwin", Architecture: "arm64"}, {OS: "darwin", Architecture: "amd64"}, {OS: "windows", Architecture: "amd64"}} {
 		for _, tool := range []Tool{PGDump, PGRestore, PSQL} {
-			_, err := lookupProductionPayload(tool, supportedPostgreSQLMajor, target)
+			manifest, err := lookupProductionPayload(tool, supportedPostgreSQLMajor, target)
+			if target == (payloadTarget{OS: "darwin", Architecture: "arm64"}) && runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+				if err != nil || validateManifest(manifest) != nil || manifest.Target != target {
+					t.Fatalf("compiled target manifest = %#v, %v", manifest, err)
+				}
+				continue
+			}
 			if err != ErrPayloadUnavailable || errors.Unwrap(err) != nil || err.Error() != "tool payload unavailable" {
-				t.Fatalf("lookupProductionPayload() error = %v", err)
+				t.Fatalf("lookupProductionPayload() error = %v for %s/%s", err, target.OS, target.Architecture)
 			}
 		}
 	}

@@ -1,7 +1,10 @@
 # R02 — client provenance (Task 02)
 
-**Status:** local macOS arm64 source candidate is under inspection; no release
-client payload is approved or shipped. Redistribution remains a separate gate.
+**Current status:** the owner approved bundling the PostgreSQL 17.11 client and
+required runtime libraries into the macOS arm64 SPARC app, with provenance and
+license notices. The executable embeds that payload. This does not qualify
+other architectures, macOS versions below the tested host, signing, or
+notarization.
 
 ## Verified source pin
 
@@ -16,17 +19,20 @@ client binary payload:
 
 ## Authorized local acquisition (macOS arm64 only)
 
-On 2026-09-25 the operator explicitly approved acquiring the pinned official
-source, verifying its digest, inspecting dependencies/licenses, building a
-local macOS arm64 candidate, and exercising it on disposable local fixtures.
-This does **not** authorize redistribution or hosted access. The HTTPS download
+On 2026-09-25 the operator approved acquiring the pinned official source,
+verifying its digest, inspecting dependencies/licenses, building a local macOS
+arm64 candidate, and exercising it on disposable local fixtures. That original
+approval did not authorize redistribution or hosted access. The owner has since
+explicitly approved embedding the exact PostgreSQL/OpenSSL client set described
+below in the macOS arm64 app, with notices; this is not hosted-backup approval.
+The HTTPS download
 contained 21,787,224 bytes and matched the SHA-256 above before extraction;
 7,718 archive entries were checked for the expected root and parent traversal.
-Source and build directories are private OS temporary storage outside Git.
+Source and build directories remain private OS temporary storage outside Git.
 The source top-level `COPYRIGHT` contains the PostgreSQL license; the nested
-`src/backend/regex/COPYRIGHT` contains additional notices to review if that
-code is shipped. This pin and matching digest do not by themselves constitute
-signed source provenance or legal sign-off.
+`src/backend/regex/COPYRIGHT` contains additional notices, included in the
+application's third-party notice output. This pin and matching digest do not by
+themselves constitute signed source provenance.
 
 The local build selects `--with-ssl=openssl --without-readline --without-icu
 --disable-nls`, retaining zlib. It uses Apple clang 21.0.0 and the developer's
@@ -34,7 +40,9 @@ Homebrew OpenSSL 3.6.4 headers/libraries; OpenSSL's local `LICENSE.txt` is
 Apache-2.0. A parallel first attempt hit a generated-header race; running
 `make -C src/backend generated-headers` before sequential
 `make -C src/bin/pg_dump`, then installing libpq and the pg_dump subtree into
-private OS temporary storage, succeeded. No source/build/payload file is in Git.
+private OS temporary storage, succeeded. Source trees/build intermediates remain
+outside Git; the selected compressed client payload is now tracked at
+`internal/tools/payloads/darwin-arm64.tar.gz`.
 
 The initial Homebrew-linked candidate is **not relocatable or release-ready**.
 Native `otool -L` finds these direct and transitive imports:
@@ -130,32 +138,33 @@ passed. This host is macOS 27.0: `minos 13.0` metadata is not runtime
 qualification on macOS 13. No signing, notarization, redistribution, hosted
 backup, or restore was performed.
 
-### Private real-client extraction smoke (2026-09-26)
+### Embedded macOS arm64 client package (current)
 
-Built and relocated the missing `psql` 17.11 executable from the same private
-PostgreSQL source candidate. Its `@rpath/libpq.5.dylib` load command and
-`LC_BUILD_VERSION minos 13.0` were inspected. After hiding the original build
-prefixes, `DYLD_PRINT_LIBRARIES` showed `psql --version` loading `libpq`,
-`libssl`, and `libcrypto` from the relocated adjacent `lib/` directory and
-printing `psql (PostgreSQL) 17.11`.
+The selected package contains PostgreSQL 17.11 `pg_dump`, `pg_restore`, `psql`,
+`libpq.5.dylib`, and OpenSSL 3.5.8 `libssl.3.dylib`/`libcrypto.3.dylib`, plus
+third-party notices. PostgreSQL was built from the verified source above against
+the separately verified OpenSSL 3.5.8 source archive (SHA-256
+`a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2`). The
+OpenSSL detached signature was not verified because GPG was unavailable.
+Build settings and every final file/archive digest are recorded in
+`build/clients/manifest.json`.
 
-Added opt-in `integration` test
-`internal/tools/candidate_integration_test.go`. With an explicitly supplied
-private client `bin/` directory, it builds an in-memory six-file gzip/USTAR
-archive and temporary manifest, runs the existing private extractor and package
-validator, then invokes extracted `pg_dump`, `pg_restore`, and `psql` using only
-`--version` through SPARC's bounded process runner. All three printed exactly
-PostgreSQL 17.11 on Darwin 27.0 arm64. With no client path supplied, the test
-skips. The temporary manifest and archive do not modify `productionPayloads`
-or persist as a package. This proves extraction/runner mechanics on this host
-only; it does not qualify macOS 13, a clean machine, signing, a release payload,
-redistribution, or hosted operations.
+All six Mach-O client/runtime files encode `minos 13.0`, load only adjacent
+`@rpath` PostgreSQL/OpenSSL libraries plus macOS `/usr/lib/libSystem` and
+`/usr/lib/libz`, and no longer contain absolute Homebrew runtime imports. The
+OpenSSL build omits its optional legacy provider. Some diagnostic/default
+configuration path strings still contain private build-prefix text; SPARC's
+closed process environment supplies explicit CA/TLS settings and does not rely
+on those paths. The app embeds the compressed package, validates it and each
+file, and privately extracts it to the user cache; `sparc licenses` prints the
+bundled notices. No system `pg_dump`, Homebrew, or `PATH` fallback is used.
 
-Fresh `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off` verification passed:
-`go test -mod=readonly ./... -count=1`, the opt-in real-client extraction test,
-full `internal/database` integration and race suites, `go vet ./...`, and
-integration-tagged vet for `internal/tools` and `internal/database`. No hosted
-access occurred.
+The tests run `pg_dump`, `pg_restore`, and `psql` 17.11 from the embedded package
+with `PATH` empty. On a disposable local PostgreSQL 17 TLS fixture, bundled
+`pg_dump` rejects both a wrong CA and hostname and accepts the correct CA. The
+encrypted cross-cluster recovery test now uses the embedded client. These tests
+ran on macOS 27.0 arm64 only; the 13.0 load-command metadata is not runtime
+qualification. No hosted backup or restore was performed.
 
 EDB PostgreSQL binary archives are retained only as an **uninspected control
 candidate** (<https://www.enterprisedb.com/download-postgresql-binaries>). No
@@ -176,38 +185,20 @@ currently lists macOS 27, 26, and Sequoia 15.8 releases in September 2026; its
 latest Ventura entry remains 13.7.8, dated August 20, 2025. This is evidence
 that the Ventura line is outside the current update cadence, not a formal Apple
 end-of-life declaration. Do not infer a supported OS floor from `minos 13.0`.
-The owner must choose between a security-current minimum and an explicit older
-OS support policy before a VM test or release claim is useful. Apple's
+The supported minimum remains undecided. Apple's
 [macOS-on-Apple-silicon VM guide](https://developer.apple.com/documentation/virtualization/running-macos-in-a-virtual-machine-on-apple-silicon)
 and [installation guide](https://developer.apple.com/documentation/virtualization/installing-macos-on-a-virtual-machine)
 describe image-specific guest/configuration requirements; they do not qualify
-Ventura runtime on this host. No hosted resource, signing identity, payload, or
-redistribution action was used.
+Ventura runtime on this host. At this historical checkpoint no payload had yet
+been embedded; the subsequent macOS arm64 bundle is documented above.
 
-## Explicitly unverified payload facts
+## Remaining qualification gates
 
-For macOS amd64 and Windows amd64, all of the following remain unverified:
-actual shipped files, architecture/load commands, import/runtime closure,
-minimum OS, build recipe, license/notices, signing identity/status, and
-post-signing digests. macOS arm64 now has a private relocatable load-command
-experiment with `minos 13.0` and synthetic TLS/restore evidence, but no runtime
-test on macOS 13, selected supported minimum, signed release payload, or
-redistribution decision. Its compiled OpenSSL/libpq default directories also
-still point to private build prefixes.
-`build/clients/manifest.json` deliberately contains no
-payload file entries and must not be treated as approval to build, download,
-or distribute one.
-
-## Next gates
-
-Do not select or embed either local candidate: the initial Homebrew-linked build
-still has absolute imports and `minos 27.0`; the later local OpenSSL 3.5.8
-experiment is unsigned, not runtime-tested on its exploratory macOS 13 target,
-and embeds private config-directory paths. Before any macOS arm64 release
-candidate, select and natively prove the supported minimum OS, establish a
-production-path OpenSSL/libpq closure, complete notices and redistribution
-review, and obtain authenticated signing/notarization plus clean-machine TLS
-restore evidence. This local approval did not include distribution or hosted
-use. macOS amd64 and Windows amd64 require their own native builds and runtime
-evidence. No Homebrew-installed client or temporary candidate is approved as a
-release payload.
+The current executable bundles macOS arm64 files only. macOS amd64 and Windows
+amd64 still have no client payload. The app is unsigned and not notarized. The
+hosted database route has not been used for a backup; explicit hosted-backup
+approval remains separate. The macOS minimum version is undecided: only the
+current macOS 27.0 arm64 host has runtime evidence, despite Mach-O `minos 13.0`
+metadata. OpenSSL's optional legacy provider is omitted. These limits are
+reflected in `build/clients/manifest.json` and must not be widened into release
+claims.

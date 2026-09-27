@@ -1,8 +1,8 @@
 # SPARC CLI
 
-SPARC (Supabase Project ARChiver) is a Go command-line project for a future Supabase project backup and recovery tool.
+SPARC (Supabase Project ARChiver) is a Go CLI for encrypted Supabase database backups. Full-project recovery is not yet supported.
 
-> **Current usable slice:** `sparc backup` creates an encrypted local PostgreSQL database archive using an explicitly selected local PostgreSQL 17 macOS arm64 client. It is deliberately marked incomplete: it does not include Auth, Storage, Functions, Vault, project configuration, cluster roles/globals, or provider-managed services. `restore` remains unavailable and hosted Supabase recovery support is not claimed.
+> **Current usable slice:** On macOS arm64, `sparc backup` creates an encrypted local PostgreSQL database archive using its bundled PostgreSQL 17.11 client; no separate PostgreSQL or OpenSSL installation is needed. The archive is deliberately marked incomplete: it excludes Auth, Storage, Functions, Vault, project configuration, cluster roles/globals, and provider-managed services. `restore` remains unavailable, and other platform payloads are not yet bundled.
 
 ## Commands
 
@@ -11,25 +11,26 @@ sparc help
 sparc version
 sparc verify --help
 sparc backup --help
+sparc licenses
 sparc restore # unavailable
 ```
 
-`help`, `version`, and `verify` do not access the network. Verification passphrases are requested without terminal echo, or can be read from an explicitly selected private file.
+`help`, `version`, `verify`, and `licenses` do not access the network. Verification and backup passphrases are requested without terminal echo, or can be read from an explicitly selected private file.
 
 ## Create a local encrypted database archive
 
-`backup` needs four explicit inputs: a project ref, a private file containing a qualified Supavisor **session-pooler** URL, a new archive directory below an existing private parent, and the exact `bin` directory of an unbundled PostgreSQL 17 macOS arm64 client. It never accepts a database URL/password in argv and never searches `PATH`. The six client files are privately copied and validated before execution; this is a developer path, not bundled-client or cross-platform support.
+`backup` needs a project ref, a private file containing the qualified Supavisor **session-pooler** URL (port 5432), and a new archive directory below an existing private parent. The macOS arm64 executable contains PostgreSQL 17.11 `pg_dump` and its required runtime libraries; SPARC extracts and validates them in its private cache. No Homebrew PostgreSQL, OpenSSL install, or `PATH` lookup is required. The URL/password never enter argv.
 
 ```sh
 mkdir -m 700 "$HOME/sparc-backups"
+ARCHIVE="$HOME/sparc-backups/database-$(date +%Y%m%d-%H%M%S)"
 ./sparc backup \
   --project-ref YOUR_PROJECT_REF \
   --database-url-file "$HOME/Library/Application Support/sparc/hosted-session-url" \
-  --archive "$HOME/sparc-backups/database-2026-09-26" \
-  --pg-client-bin /absolute/path/to/pg17/bin
+  --archive "$ARCHIVE"
 ```
 
-The command prompts for an archive passphrase without echo unless you add `--passphrase-file /absolute/private/file`. It prints `Database archive created.` and exits **3**, meaning the encrypted archive is intact but deliberately incomplete. Run `sparc verify` with the same passphrase to verify it offline. This command needs separate authorization before it is pointed at any hosted project; it has not been run as a hosted backup in this repository. Remote folders are not supported yet.
+The command prompts for an archive passphrase without echo unless you add `--passphrase-file /absolute/private/file`. It prints `Database archive created.` and exits **3**, meaning the encrypted archive is intact but deliberately incomplete. Run `./sparc verify --archive "$ARCHIVE"` with the same passphrase to verify it offline. A hosted backup reads database contents and needs the operator's authorization. Remote folders are not supported yet. Run `./sparc licenses` to print the bundled PostgreSQL and OpenSSL notices.
 
 ## Try developer-only backup/restore
 
@@ -50,7 +51,7 @@ go build -o ./sparc ./cmd/sparc
 ./sparc verify --archive "$HOME/sparc-demo/archive"
 ```
 
-The separate integration test is also available: `SPARC_TEST_PG_BIN=/absolute/path/to/postgresql-17/bin go test -tags=integration ./internal/database -run '^TestLocalRecoveryRehearsal$' -count=1 -v`. If the variable is unset, it skips. Native Windows runtime for this demo remains unqualified. This workflow does not prove hosted Supabase capture, restore, production client packaging, arbitrary database connections, remote folders, or full-project coverage.
+The separate integration test is also available: `SPARC_TEST_PG_BIN=/absolute/path/to/postgresql-17/bin go test -tags=integration ./internal/database -run '^TestLocalRecoveryRehearsal$' -count=1 -v`. This developer-only fixture needs local PostgreSQL server tools; the normal `sparc backup` command does not. If the variable is unset, the test skips. Native Windows runtime remains unqualified. This rehearsal does not prove hosted Supabase capture, restore, arbitrary database connections, remote folders, or full-project coverage.
 
 ## Development
 

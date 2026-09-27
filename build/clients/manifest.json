@@ -1,57 +1,75 @@
 {
-  "schemaVersion": 1,
-  "status": "research-only",
+  "schemaVersion": 2,
+  "status": "embedded-macos-arm64",
   "payloadApproval": {
-    "approved": false,
-    "message": "No PostgreSQL client payload has been downloaded, inspected, selected, or approved for shipping. This manifest is not an executable inventory."
+    "approved": true,
+    "scope": "PostgreSQL 17.11 client binaries and required runtime libraries embedded in the macOS arm64 SPARC CLI, with provenance and license notices",
+    "notIncluded": ["macOS amd64 payload", "Windows payload", "signing", "notarization", "runtime qualification below macOS 27"]
   },
-  "researchSourceCandidate": {
-    "postgresqlVersion": "17.11",
-    "sourceURL": "https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.bz2",
-    "sha256": "dd27f2b3c59e73ed14aa3324901242bf69a032a6347805f274e6260322d42979",
-    "provenance": "Official PostgreSQL source directory and SHA-256 sidecar, verified in R02."
-  },
-  "uninspectedControlCandidate": {
-    "name": "EDB PostgreSQL binary archives",
-    "listingURL": "https://www.enterprisedb.com/download-postgresql-binaries",
-    "status": "uninspected control candidate only; no artifact URL, digest, architecture, files, imports, licenses, or redistribution conclusion is recorded"
-  },
-  "platformResearch": [
+  "sources": [
     {
-      "platform": "darwin",
-      "architecture": "arm64",
-      "minimumOS": "unverified",
-      "buildRecipe": "unverified",
-      "files": [],
-      "fileInventory": "unverified",
-      "importsAndRuntimeClosure": "unverified",
-      "licensesAndNotices": "unverified",
-      "signing": "unverified",
-      "postSigningDigests": "unverified"
+      "name": "PostgreSQL",
+      "version": "17.11",
+      "url": "https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.bz2",
+      "sha256": "dd27f2b3c59e73ed14aa3324901242bf69a032a6347805f274e6260322d42979",
+      "license": "PostgreSQL License; notices include embedded regex/Tcl code",
+      "licenseFile": "internal/tools/THIRD_PARTY_NOTICES.txt"
     },
     {
-      "platform": "darwin",
-      "architecture": "amd64",
-      "minimumOS": "unverified",
-      "buildRecipe": "unverified",
-      "files": [],
-      "fileInventory": "unverified",
-      "importsAndRuntimeClosure": "unverified",
-      "licensesAndNotices": "unverified",
-      "signing": "unverified",
-      "postSigningDigests": "unverified"
-    },
-    {
-      "platform": "windows",
-      "architecture": "amd64",
-      "minimumOS": "unverified",
-      "buildRecipe": "unverified",
-      "files": [],
-      "fileInventory": "unverified",
-      "importsAndRuntimeClosure": "unverified",
-      "licensesAndNotices": "unverified",
-      "signing": "unverified",
-      "postSigningDigests": "unverified"
+      "name": "OpenSSL",
+      "version": "3.5.8",
+      "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz",
+      "sha256": "a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2",
+      "signatureVerified": false,
+      "license": "Apache-2.0",
+      "licenseFile": "internal/tools/THIRD_PARTY_NOTICES.txt"
     }
+  ],
+  "build": {
+    "target": "darwin-arm64",
+    "host": "MacBookAir10,1; macOS 27.0; Apple clang 21.0.0",
+    "opensslConfigure": "darwin64-arm64-cc -mmacosx-version-min=13.0 no-tests no-apps no-legacy",
+    "postgresConfigure": "--with-ssl=openssl --disable-rpath; PostgreSQL 17.11 source; OpenSSL 3.5.8 shared libraries",
+    "deploymentMetadata": "Mach-O LC_BUILD_VERSION minos 13.0 on all six binaries/libraries; this is metadata, not runtime qualification",
+    "runtimeConfig": "SPARC supplies explicit TLS verify-full and CA; child environment is closed and does not rely on external OpenSSL config/modules",
+    "signature": "unsigned; no notarization"
+  },
+  "embeddedArchive": {
+    "path": "internal/tools/payloads/darwin-arm64.tar.gz",
+    "length": 3615199,
+    "sha256": "9fc7d7596c1b13c240ab12e661a89e529a47ca880e0faa5ff3b07f472bd0069e",
+    "entries": [
+      {"path": "bin/pg_dump", "purpose": "executable", "mode": "0700", "length": 458104, "sha256": "9bbffc2dcd3a94f2e80c3fdcff84473850b638f6a4eb2b67306d58eca91120bd"},
+      {"path": "bin/pg_restore", "purpose": "executable", "mode": "0700", "length": 251768, "sha256": "d557bf01442153a90960b22d6f37695ea7cb4e03cd92d61211a1d93396443b7f"},
+      {"path": "bin/psql", "purpose": "executable", "mode": "0700", "length": 552152, "sha256": "801a29726b5c110a3e5a765af8408fc26d8fdcf3808ee62334795944582341cc"},
+      {"path": "lib/libpq.5.dylib", "purpose": "runtime", "mode": "0600", "length": 317184, "sha256": "fb1c3ad77df600d46224c9490e46073ad891423bf6cb0eba55d0f7c8982b3d40"},
+      {"path": "lib/libssl.3.dylib", "purpose": "runtime", "mode": "0600", "length": 1381584, "sha256": "c75133be4790a93fed844e259d824138c38ff3bffdddad89aeffdfffdf791e45"},
+      {"path": "lib/libcrypto.3.dylib", "purpose": "runtime", "mode": "0600", "length": 6314560, "sha256": "6dfdba4b25d216bef1b3d1ffeacd6a57bf116559f45c649c748422929c0fe3b6", "source": "OpenSSL 3.5.8"},
+      {"path": "licenses/THIRD_PARTY_NOTICES.txt", "purpose": "notice", "mode": "0600", "length": 16054, "sha256": "e9237451946aad087875d3f1a72bb326abd6003e2bf7e91d9d6d24aac6e9c96a"}
+    ]
+  },
+  "runtimeImports": {
+    "bundled": ["@rpath/libpq.5.dylib", "@rpath/libssl.3.dylib", "@rpath/libcrypto.3.dylib"],
+    "system": ["/usr/lib/libSystem.B.dylib", "/usr/lib/libz.1.dylib"],
+    "rpaths": ["@loader_path/../lib", "@loader_path"],
+    "externalBuildPaths": "none in otool -L/LC_RPATH; private source/build prefixes remain in some embedded diagnostic/default-path strings, which the isolated SPARC runtime does not use"
+  },
+  "verification": {
+    "clientVersions": ["pg_dump (PostgreSQL) 17.11", "pg_restore (PostgreSQL) 17.11", "psql (PostgreSQL) 17.11"],
+    "tests": [
+      "Bundled pg_dump/pg_restore/psql version execution with PATH empty",
+      "Bundled native TLS local fixture: wrong CA and hostname refused; correct CA accepted",
+      "Encrypted cross-cluster recovery using embedded client and disposable PostgreSQL 17 clusters"
+    ],
+    "runtimeHost": "macOS 27.0 arm64 only",
+    "hostedBackupPerformed": false
+  },
+  "qualificationLimits": [
+    "Mach-O deployment metadata 13.0 is not evidence that macOS 13 runs correctly",
+    "OpenSSL optional legacy provider is not included",
+    "No signing or notarization",
+    "No macOS amd64 or Windows payload",
+    "No hosted backup or restore evidence",
+    "The archive remains database-only and marked incomplete"
   ]
 }

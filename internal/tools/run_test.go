@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,8 @@ func TestRunUsesOnlyTypedVersionAndIsolatedProcessSpec(t *testing.T) {
 	t.Setenv("PATH", "secret-path")
 	t.Setenv("PGPASSWORD", "secret-password")
 	t.Setenv("DYLD_INSERT_LIBRARIES", "secret-loader")
+	t.Setenv("OPENSSL_CONF", "secret-openssl-config")
+	t.Setenv("OPENSSL_MODULES", "secret-openssl-modules")
 	t.Setenv("HTTPS_PROXY", "secret-proxy")
 	t.Setenv("SystemRoot", "secret-system-root")
 	t.Setenv("HOME", "secret-home")
@@ -67,6 +70,13 @@ func TestRunUsesOnlyTypedVersionAndIsolatedProcessSpec(t *testing.T) {
 		if !containsEnvironment(got.Env, required) {
 			t.Fatalf("missing %q in %#v", required, got.Env)
 		}
+	}
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		if environmentValue(got.Env, "OPENSSL_CONF") != "/dev/null" || environmentValue(got.Env, "OPENSSL_MODULES") != filepath.Join(got.Dir, "config") {
+			t.Fatalf("OpenSSL ambient configuration was not isolated: %#v", got.Env)
+		}
+	} else if containsEnvironment(got.Env, "OPENSSL_CONF=") || containsEnvironment(got.Env, "OPENSSL_MODULES=") {
+		t.Fatalf("unsupported-target OpenSSL environment unexpectedly set: %#v", got.Env)
 	}
 	if !strings.HasPrefix(got.Path, packagePath+string(filepath.Separator)) || got.Dir == packagePath || !strings.HasPrefix(got.Dir, filepath.Join(cacheRoot, operationDirectory)+string(filepath.Separator)) {
 		t.Fatalf("untrusted path selection: path=%q dir=%q", got.Path, got.Dir)
@@ -464,9 +474,9 @@ func TestRunRejectsInvalidRequestsAndPrestartCancellation(t *testing.T) {
 		t.Fatalf("pre-start cancellation = %v, called=%v, closes=%d", err, called, cancelledSink.closeCount())
 	}
 	t.Setenv("HOME", "hostile-relative-home")
-	emptyInventorySink := &memorySink{}
-	if _, err := Run(context.Background(), validRunRequestForTest(emptyInventorySink)); err != ErrPayloadUnavailable || emptyInventorySink.closeCount() != 1 {
-		t.Fatalf("production empty inventory = %v, closes=%d", err, emptyInventorySink.closeCount())
+	invalidHomeSink := &memorySink{}
+	if _, err := Run(context.Background(), validRunRequestForTest(invalidHomeSink)); err != ErrRun || invalidHomeSink.closeCount() != 1 {
+		t.Fatalf("invalid private cache location = %v, closes=%d", err, invalidHomeSink.closeCount())
 	}
 	ops = runTestOps(func(platform.ProcessSpec) (ownedProcess, error) { return completedProcess(0), nil })
 	ops.removeAll = func(string) error { return errors.New("secret-canary") }

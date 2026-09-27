@@ -1,6 +1,4 @@
 // Package tools owns trusted bundled-tool inventory and execution boundaries.
-// The production payload inventory is intentionally empty until client artifacts
-// are separately approved.
 package tools
 
 import (
@@ -66,9 +64,9 @@ type packageManifest struct {
 	Executables      map[Tool]string
 }
 
-// No runtime file, environment variable, PATH entry, or adjacent executable can
-// populate this inventory. Approved payloads must be compiled into a later build.
-var productionPayloads = [...]packageManifest{}
+// Payloads are supplied only by target-specific files compiled into the binary.
+var productionPayloads []packageManifest
+var productionPayloadArchives = map[payloadTarget][]byte{}
 
 func lookupProductionPayload(tool Tool, major uint16, target payloadTarget) (packageManifest, error) {
 	return selectPayload(productionPayloads[:], tool, major, target)
@@ -217,6 +215,15 @@ func validTarget(target payloadTarget) bool {
 	return target == (payloadTarget{OS: "darwin", Architecture: "arm64"}) ||
 		target == (payloadTarget{OS: "darwin", Architecture: "amd64"}) ||
 		target == (payloadTarget{OS: "windows", Architecture: "amd64"})
+}
+
+func payloadDigest(encoded string) [sha256.Size]byte {
+	var digest [sha256.Size]byte
+	decoded, err := hex.DecodeString(encoded)
+	if err == nil && len(decoded) == len(digest) {
+		copy(digest[:], decoded)
+	}
+	return digest
 }
 
 func zeroDigest(digest [sha256.Size]byte) bool { return digest == [sha256.Size]byte{} }

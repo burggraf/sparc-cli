@@ -116,10 +116,13 @@ interrupted archive must not appear finalized.
 ## Current executable database slice
 
 `sparc backup` can create one encrypted local PostgreSQL custom-format component
-from a qualified Supavisor session-pooler route when the operator explicitly
-supplies a PostgreSQL 17 macOS arm64 client directory. The component is always
-marked `incomplete`: the inventory table above remains the support contract.
+from a qualified Supavisor session-pooler route on macOS arm64. PostgreSQL
+17.11 `pg_dump`, libpq, and the OpenSSL runtime are embedded in the executable
+and privately extracted/validated by SPARC; no separately installed PostgreSQL
+client is required. The component is always marked `incomplete`: the inventory
+table above remains the support contract.
 The command does not claim capture of Auth, Storage, Functions, Vault,
 configuration, roles/globals, or managed-provider services; it has no remote
-destination or restore command. A successful command is therefore exit `3`
+destination or restore command. Other platform client payloads are not bundled.
+A successful command is therefore exit `3`
 (intact archive with incomplete declared coverage), not full-project success.

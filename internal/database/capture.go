@@ -37,14 +37,13 @@ type CaptureRequest struct {
 }
 
 type recoveryOps struct {
-	rootCert         func(ConnectionParams) ([]byte, error)
-	observe          func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error)
-	run              func(context.Context, tools.RunRequest) (tools.RunResult, error)
-	runExternal      func(context.Context, string, tools.RunRequest) (tools.RunResult, error)
-	validateExternal func(string) error
-	create           func(string, []archive.Input, string) (archive.Manifest, error)
-	verify           func(string, string) (archive.Manifest, error)
-	open             func(string, archive.Component, string) (io.ReadCloser, error)
+	rootCert    func(ConnectionParams) ([]byte, error)
+	observe     func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error)
+	prepareTool func(context.Context, tools.Tool) error
+	run         func(context.Context, tools.RunRequest) (tools.RunResult, error)
+	create      func(string, []archive.Input, string) (archive.Manifest, error)
+	verify      func(string, string) (archive.Manifest, error)
+	open        func(string, archive.Component, string) (io.ReadCloser, error)
 }
 
 // Capture observes the source read-only, then streams one incomplete custom-format
@@ -53,25 +52,9 @@ func Capture(ctx context.Context, request CaptureRequest) (archive.Manifest, err
 	return captureWith(ctx, request, defaultRecoveryOps())
 }
 
-// CaptureWithExternalClient uses an explicitly selected local PostgreSQL 17
-// client. It is an unbundled macOS arm64 developer path, not a payload release.
-func CaptureWithExternalClient(ctx context.Context, clientBin string, request CaptureRequest) (archive.Manifest, error) {
-	return captureWithExternalClient(ctx, clientBin, request, defaultRecoveryOps())
-}
-
-func captureWithExternalClient(ctx context.Context, clientBin string, request CaptureRequest, ops recoveryOps) (archive.Manifest, error) {
-	if clientBin == "" || ops.runExternal == nil || ops.validateExternal == nil || ops.validateExternal(clientBin) != nil {
-		return archive.Manifest{}, ErrCapture
-	}
-	ops.run = func(ctx context.Context, request tools.RunRequest) (tools.RunResult, error) {
-		return ops.runExternal(ctx, clientBin, request)
-	}
-	return captureWith(ctx, request, ops)
-}
-
 func captureWith(ctx context.Context, request CaptureRequest, ops recoveryOps) (archive.Manifest, error) {
 	if ctx == nil || !validRecoveryConnection(request.Source, request.SourcePassword) || !validRecoveryArchivePath(request.ArchivePath) || archive.ValidatePassphrase(request.ArchivePassphrase) != nil ||
-		ops.rootCert == nil || ops.observe == nil || ops.run == nil || ops.create == nil {
+		ops.rootCert == nil || ops.observe == nil || ops.prepareTool == nil || ops.run == nil || ops.create == nil || ops.prepareTool(ctx, tools.PGDump) != nil {
 		return archive.Manifest{}, ErrCapture
 	}
 	rootCert, err := ops.rootCert(request.Source)
@@ -124,14 +107,13 @@ func captureWith(ctx context.Context, request CaptureRequest, ops recoveryOps) (
 
 func defaultRecoveryOps() recoveryOps {
 	return recoveryOps{
-		rootCert:         nativeRootCertPEM,
-		observe:          ObserveCatalog,
-		run:              tools.Run,
-		runExternal:      tools.RunExternal,
-		validateExternal: tools.ValidateExternalClient,
-		create:           destination.Create,
-		verify:           archive.Verify,
-		open:             openDatabaseDump,
+		rootCert:    nativeRootCertPEM,
+		observe:     ObserveCatalog,
+		prepareTool: tools.PrepareProductionPayload,
+		run:         tools.Run,
+		create:      destination.Create,
+		verify:      archive.Verify,
+		open:        openDatabaseDump,
 	}
 }
 

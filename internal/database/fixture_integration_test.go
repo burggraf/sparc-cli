@@ -54,13 +54,19 @@ func newPostgresFixture(t *testing.T) *postgresFixture {
 	}
 
 	clearDatabaseEnvironment(t)
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal("unable to resolve local fixture root")
+	}
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal("unable to protect local fixture directory")
 	}
 	homeDir := filepath.Join(root, "home")
 	if err := os.Mkdir(homeDir, 0700); err != nil {
 		t.Fatal("unable to create local fixture home")
+	}
+	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "Caches"), 0700); err != nil {
+		t.Fatal("unable to create local fixture cache directory")
 	}
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)

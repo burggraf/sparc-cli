@@ -1,8 +1,10 @@
 # Local Database Backup CLI Implementation Plan
 
-> **REQUIRED SUB-SKILL:** Use the executing-plans skill to implement this plan task-by-task.
+> **Superseded:** The initial external-client prototype described here did not satisfy the self-contained app requirement. The current macOS arm64 executable embeds the client; see `build/clients/README.md`, `build/clients/manifest.json`, and `docs/progress.md`.
+>
+> **REQUIRED SUB-SKILL:** Use the executing-plans skill to implement this historical plan task-by-task.
 
-**Goal:** Make `sparc backup` create an encrypted local PostgreSQL database archive from a Supabase session-pooler connection using an explicitly supplied PostgreSQL 17 client directory.
+**Goal:** Historical goal: make `sparc backup` create an encrypted local PostgreSQL database archive from a Supabase session-pooler connection using an explicitly supplied PostgreSQL 17 client directory.
 
 **Architecture:** Keep the current signed/bundled payload boundary intact: `tools.Run` remains the release-path runner with an empty production inventory. Add a separate, explicit unbundled-client runner for the current macOS arm64 developer environment; it validates and privately re-packages the selected local PostgreSQL client before executing the same closed dump operation. The CLI reads the session URL and archive passphrase from private files or an interactive passphrase prompt, parses only the qualified Supavisor session route, then streams the dump through the existing encrypted local destination.
 
