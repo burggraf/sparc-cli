@@ -1538,8 +1538,18 @@ Fresh verification passed on local macOS arm64:
 - Default, integration-tagged, and hosted-tagged `go vet` passed
 - Windows AMD64 integration+hosted database tests cross-compiled; this is not Windows runtime qualification
 
-The observer is local-tested only. Hosted access still requires explicit
-owner approval naming the exact source project ref and this exact read-only
-scope. Auth login, synthetic hosted writes, target work, backup/restore,
-Management/Auth REST access, normal CLI exposure, and production payload
-selection remain outside this authorization.
+The observer is local-tested; one separately authorized hosted observation also
+ran on 2026-09-26. The exact source ref and credential contents are not recorded
+in Git. The tagged probe used the private expiring config and URL file, the
+qualified Supavisor session route, embedded CA with `verify-full`, and one
+read-only PostgreSQL 17 transaction. It passed in 1.96 seconds: both selected
+schemas were present, with 534 column rows and 230 constraint/column-edge rows.
+Only these aggregate counts and assurance categories were retained; raw catalog
+metadata was not printed or persisted. No table/Auth rows, Auth REST or
+Management API calls, target access, writes, or resource creation occurred;
+cost cap was $0. This does not establish independent backend identity, a
+universal Supabase baseline, Auth login, or recovery qualification. The one-run
+authorization is consumed; any repeat or broader hosted action requires fresh
+exact-scope approval. Auth login, synthetic hosted writes, target work,
+backup/restore, Management/Auth REST access, normal CLI exposure, and production
+payload selection remain unauthorized.

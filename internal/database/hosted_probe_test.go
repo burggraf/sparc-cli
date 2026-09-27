@@ -58,7 +58,7 @@ func TestHostedReadOnlySupavisorProbe(t *testing.T) {
 	if !metadata.Catalog.TLS || !metadata.Catalog.ReadOnly || metadata.Catalog.ServerMajor != supportedPostgresMajor || len(metadata.Catalog.Schemas) != 2 {
 		t.Fatal("hosted read-only public/auth probe did not meet the expected checks")
 	}
-	t.Logf("read-only public/auth metadata probe passed: PostgreSQL 17, verified TLS, read-only transaction, columns=%d constraints=%d", len(metadata.Columns), len(metadata.Constraints))
+	t.Logf("read-only public/auth metadata probe passed: PostgreSQL 17, verified TLS, read-only transaction, column_rows=%d constraint_rows=%d", len(metadata.Columns), len(metadata.Constraints))
 }
 
 func parseHostedSupavisorSessionURL(raw []byte, expectedProjectRef string) (ConnectionParams, []byte, error) {

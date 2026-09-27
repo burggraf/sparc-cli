@@ -1,6 +1,6 @@
 # Task 12 — read-only public/Auth inventory design
 
-**Status:** offline implementation and disposable PostgreSQL 17 test passed; hosted activity remains unauthorized. This file grants no hosted access. No hosted endpoint or credential was accessed.
+**Status:** offline implementation and disposable PostgreSQL 17 test passed; one separately authorized read-only hosted probe also passed. This file grants no further hosted access. Credentials and raw catalog rows were not stored.
 
 ## Goal and boundary
 
@@ -10,7 +10,7 @@ Use one caller-supplied project ref and one explicitly supplied database route. 
 
 ## Proposed read-only operations
 
-The live probe, if separately authorized, will use the bounded Go `ObservePublicAuthMetadata` path. It fixes selection to `["public", "auth"]` and runs the base catalog inspection plus the shape queries below in one read-only transaction:
+The one approved probe used the bounded Go `ObservePublicAuthMetadata` path. It fixes selection to `["public", "auth"]` and runs the base catalog inspection plus the shape queries below in one read-only transaction. Any repeat or broader activity requires new approval:
 
 - One PostgreSQL 17 connection through the qualified Supavisor session-pooler route only: port 5432 and exact `postgres.<expected-project-ref>` username. The hosted harness refuses direct and transaction-pooler routes. Use the explicit embedded Supabase CA with `sslmode=verify-full`; no ambient PostgreSQL configuration or credential fallback. Refuse wrong CA/hostname, wrong server major, missing TLS, or a transaction not confirmed read-only.
 - One read-only transaction with the existing `search_path=pg_catalog`, 8-second statement timeout, 2-second lock timeout and 15-second observer deadline.
@@ -79,13 +79,13 @@ The constraint query includes only edges with an endpoint in `public` or `auth`;
 - No Management API request in this phase. In particular, exclude `GET /v1/projects/{ref}/config/auth`: its schema contains provider-secret-named fields, and this review did not establish whether returned values are redacted. Exclude account-wide project listing.
 - No Auth Admin `listUsers` or other `/auth/v1/admin/*` route; these return user data and require privileged `service_role` access.
 - No data-plane reads: no table-row `SELECT`, `COUNT(*)`, sampling, or export. The only planned `SELECT`s are the fixed `pg_catalog` metadata statements above. No login, signup, password reset, test-user creation, SMTP/provider call, Storage request, Vault/key request, write, restore, resource creation, or cleanup.
-- No use of hosted credentials, project refs, or private URL files until the owner supplies a fresh scope approval and the implementation has an offline-tested hosted harness.
+- No further use of hosted credentials, project refs, or private URL files without a new exact-scope approval; the single authorized probe is complete.
 
 Official references: [Management API: get Auth config](https://supabase.com/docs/reference/api/v1-get-auth-service-config), [Auth Admin: list users](https://supabase.com/docs/reference/javascript/auth-admin-listusers), [Auth user management and schema boundary](https://supabase.com/docs/guides/auth/managing-user-data). These documents were consulted as public documentation only; no endpoint was called.
 
-## Required approval before any hosted probe
+## Approval contract for future hosted probes
 
-The owner must explicitly provide, outside this repository:
+The one probe recorded in [`docs/progress.md`](../progress.md) used this scope under the owner's approval. Any future probe must be explicitly approved again, outside this repository:
 
 ```text
 Source project ref: <exact ref>
