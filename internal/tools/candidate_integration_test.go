@@ -14,7 +14,7 @@ import (
 
 func candidatePayloadArchive(t *testing.T, clientBin string) (packageManifest, []byte) {
 	t.Helper()
-	manifest, archive, err := buildCandidatePayloadArchive(clientBin)
+	manifest, archive, err := buildExternalPayloadArchive(clientBin)
 	if err != nil {
 		t.Fatalf("build private candidate payload: %v", err)
 	}
@@ -62,5 +62,11 @@ func TestOptInCandidatePayloadExtraction(t *testing.T) {
 	request := RunRequest{Tool: PGDump, Mode: ModeVersion, Timeout: runTestTimeout, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
 	if _, err := RunCandidate(context.Background(), clientBin, request); err != nil || sink.String() != "pg_dump (PostgreSQL) 17.11\n" {
 		t.Fatalf("integration-only candidate runner: output=%q err=%v", sink.String(), err)
+	}
+
+	externalSink := &memorySink{}
+	externalRequest := RunRequest{Tool: PGDump, Mode: ModeVersion, Timeout: runTestTimeout, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: externalSink}
+	if _, err := RunExternal(context.Background(), clientBin, externalRequest); err != nil || externalSink.String() != "pg_dump (PostgreSQL) 17.11\n" {
+		t.Fatalf("explicit external runner: output=%q err=%v", externalSink.String(), err)
 	}
 }
