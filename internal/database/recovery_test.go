@@ -56,6 +56,20 @@ func TestCaptureRequiresPostgres17VerifiedReadOnlyObservation(t *testing.T) {
 	}
 }
 
+func TestCaptureRejectsUnsafeArchiveParentBeforeSourceObservation(t *testing.T) {
+	request := captureTestRequest(t)
+	request.ArchivePath = "/private/tmp/sparc-unsafe-archive"
+	ops := recoveryTestOps()
+	observed := false
+	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
+		observed = true
+		return CatalogObservation{}, nil
+	}
+	if _, err := captureWith(context.Background(), request, ops); err != ErrCapture || observed {
+		t.Fatalf("unsafe archive parent reached source observation: err=%v observed=%t", err, observed)
+	}
+}
+
 func TestCaptureWithExternalClientRejectsClientBeforeSourceObservation(t *testing.T) {
 	request := captureTestRequest(t)
 	ops := recoveryTestOps()
@@ -392,9 +406,17 @@ func (r *recoveryTestInput) Close() error { r.closed = true; return nil }
 
 func captureTestRequest(t *testing.T) CaptureRequest {
 	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal("unable to resolve capture test root")
+	}
+	privateDir := filepath.Join(root, "private")
+	if err := platform.CreatePrivateDir(privateDir); err != nil {
+		t.Fatal("unable to create private capture test directory")
+	}
 	return CaptureRequest{
 		Source: validConnectionParams(t), SourcePassword: []byte("synthetic-db-password"),
-		ArchivePath: t.TempDir() + "/capture", ArchivePassphrase: recoveryTestPassphrase,
+		ArchivePath: filepath.Join(privateDir, "capture"), ArchivePassphrase: recoveryTestPassphrase,
 	}
 }
 
