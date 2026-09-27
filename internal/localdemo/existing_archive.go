@@ -4,6 +4,7 @@ package localdemo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,13 @@ import (
 
 	"github.com/burggraf/sparc-cli/internal/archive"
 	"github.com/burggraf/sparc-cli/internal/platform"
+)
+
+var (
+	ErrRestoreMissingRole      = errors.New("restore requires unavailable database roles")
+	ErrRestoreMissingExtension = errors.New("restore requires unavailable extensions")
+	ErrRestorePermission       = errors.New("restore was denied by PostgreSQL permissions")
+	ErrRestoreConflict         = errors.New("restore encountered conflicting objects")
 )
 
 // RehearseExistingArchive restores one verified database component into its own
@@ -103,14 +111,34 @@ func RehearseExistingArchive(ctx context.Context, binDir, archivePath string, pa
 	}
 	// A PostgreSQL restore executes the archive's SQL as the disposable server's
 	// user. Do not point this rehearsal at an untrusted archive.
-	restoreErr := runCommandWithTimeout(ctx, 5*time.Minute, env, tools.pgrestore, plaintext, io.Discard,
+	var restoreStderr boundedBuffer
+	restoreErr := runCommandWithTimeout(ctx, 5*time.Minute, env, tools.pgrestore, plaintext, &restoreStderr,
 		"--single-transaction", "--exit-on-error", "--no-password", "--dbname", connInfo)
-	if ciphertext.Close() != nil || restoreErr != nil {
+	if ciphertext.Close() != nil {
 		return ErrRestore
+	}
+	if restoreErr != nil {
+		return classifyRestoreFailure(restoreStderr.Bytes())
 	}
 	if _, err := querySQL(ctx, env, tools.psql, connInfo,
 		"SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema'"); err != nil {
 		return ErrRestore
 	}
 	return nil
+}
+
+func classifyRestoreFailure(stderr []byte) error {
+	message := strings.ToLower(string(stderr))
+	switch {
+	case strings.Contains(message, "role ") && strings.Contains(message, "does not exist"):
+		return ErrRestoreMissingRole
+	case strings.Contains(message, "extension ") && (strings.Contains(message, "does not exist") || strings.Contains(message, "not available")):
+		return ErrRestoreMissingExtension
+	case strings.Contains(message, "permission denied") || strings.Contains(message, "must be owner of"):
+		return ErrRestorePermission
+	case strings.Contains(message, "already exists"):
+		return ErrRestoreConflict
+	default:
+		return ErrRestore
+	}
 }

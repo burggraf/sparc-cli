@@ -22,6 +22,21 @@ func TestRehearseExistingArchiveRejectsInvalidInputBeforeStartingCluster(t *test
 	}
 }
 
+func TestClassifyRestoreFailureWithoutExposingPostgresOutput(t *testing.T) {
+	for _, test := range []struct {
+		stderr string
+		want   error
+	}{
+		{"pg_restore: error: could not execute query: ERROR:  role \"private-role-canary\" does not exist\n", ErrRestoreMissingRole},
+		{"pg_restore: error: could not execute query: ERROR:  extension \"private-extension-canary\" is not available\n", ErrRestoreMissingExtension},
+		{"pg_restore: error: could not execute query: ERROR:  syntax error near 'private-canary'\n", ErrRestore},
+	} {
+		if got := classifyRestoreFailure([]byte(test.stderr)); got != test.want || strings.Contains(got.Error(), "private-") {
+			t.Fatalf("classified failure = %v, want %v", got, test.want)
+		}
+	}
+}
+
 func TestPostgresMajorParsesClientOutput(t *testing.T) {
 	for output, want := range map[string]int{
 		"pg_dump (PostgreSQL) 17.9 (Homebrew)": 17,

@@ -83,8 +83,16 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "sparc-localrestore: archive verification or format failed")
 		case errors.Is(err, localdemo.ErrTools):
 			fmt.Fprintln(stderr, "sparc-localrestore: Homebrew PostgreSQL 17 tools unavailable")
+		case errors.Is(err, localdemo.ErrRestoreMissingRole):
+			fmt.Fprintln(stderr, "sparc-localrestore: one or more database roles required by the archive are absent from the disposable PostgreSQL cluster")
+		case errors.Is(err, localdemo.ErrRestoreMissingExtension):
+			fmt.Fprintln(stderr, "sparc-localrestore: one or more extensions required by the archive are unavailable in Homebrew PostgreSQL")
+		case errors.Is(err, localdemo.ErrRestorePermission):
+			fmt.Fprintln(stderr, "sparc-localrestore: PostgreSQL denied an operation required by the archive")
+		case errors.Is(err, localdemo.ErrRestoreConflict):
+			fmt.Fprintln(stderr, "sparc-localrestore: the archive contains conflicting PostgreSQL objects")
 		case errors.Is(err, localdemo.ErrRestore):
-			fmt.Fprintln(stderr, "sparc-localrestore: PostgreSQL rejected the restore; missing roles/extensions or other restore errors are possible")
+			fmt.Fprintln(stderr, "sparc-localrestore: PostgreSQL rejected the restore; diagnostic did not match a known safe category")
 		case errors.Is(err, localdemo.ErrCleanup):
 			fmt.Fprintln(stderr, "sparc-localrestore: cluster cleanup failed; inspect /private/tmp/sparc-restore-* before retrying")
 		default:
