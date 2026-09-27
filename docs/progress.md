@@ -131,6 +131,38 @@ qualification or release approval. Fresh default, full integration, race, and
 vet suites passed. No further hosted access, backup, or restore occurred; see
 R02 for the provenance and limitations.
 
+### Private real-client extraction smoke (2026-09-26)
+
+Built the missing PostgreSQL 17.11 `psql` into the private candidate, rewrote its
+load commands to the adjacent relative library layout, then hid the original
+build prefixes. On macOS 27.0 arm64, `DYLD_PRINT_LIBRARIES` showed `psql --version`
+loading the adjacent `libpq`, `libssl`, and `libcrypto`; it printed version
+17.11. No build output or candidate payload entered Git.
+
+Added the opt-in `integration`-tagged `internal/tools/candidate_integration_test.go`.
+It requires an explicit absolute `SPARC_TEST_PG_CLIENT_BIN`; otherwise it skips.
+The test makes an in-memory manifest and gzip/USTAR archive describing the three
+clients and three adjacent dylibs, invokes the existing private extractor and
+package validator, then runs each extracted executable through SPARC's bounded
+runner with only `--version`. Each returned exactly PostgreSQL 17.11. This does
+not add or select production payloads and proves only local extractor/runner
+mechanics on this macOS 27 host.
+
+**TDD:** The focused test first failed to compile because the archive helper was
+not implemented. The first execution then exposed an invalid 10-second cleanup
+timeout (the runner caps it at five seconds); setting the test cleanup budget to
+one second produced the passing opt-in run. Without the explicit candidate path,
+the test skips.
+
+**Fresh verification:** `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test
+-mod=readonly ./... -count=1`; the opt-in candidate extraction test;
+`go test -mod=readonly -tags=integration ./internal/database -count=1`;
+`go test -race -mod=readonly -tags=integration ./internal/database -count=1`;
+`go vet ./...`; and `go vet -tags=integration ./internal/tools
+./internal/database` all passed. No hosted access occurred. No qualification of
+macOS 13, clean-machine execution, signing, redistribution, or hosted operations
+is implied; see R02.
+
 ### Open blockers
 
 Ad-hoc signing proves byte/signature preservation only—not Developer ID,

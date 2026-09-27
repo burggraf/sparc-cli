@@ -103,12 +103,12 @@ A fresh PostgreSQL 17.11 build used the private OpenSSL 3.5.8 headers/libraries,
 configure log reports the installed Homebrew `openssl` command as 3.6.4, but its
 compiler/linker probes use the private 3.5.8 prefix; final load commands and
 runtime loading confirm the candidate libraries. The `pg_dump`, `pg_restore`,
-`libpq.5.dylib`, `libssl.3.dylib`, and `libcrypto.3.dylib` runtime files are
-arm64 and encode `minos 13.0`. Their dependencies were rewritten locally to
+`psql`, `libpq.5.dylib`, `libssl.3.dylib`, and `libcrypto.3.dylib` runtime files
+are arm64 and encode `minos 13.0`. Their dependencies were rewritten locally to
 `@rpath` install names with relative run paths. `otool -L` showed only adjacent
 candidate libraries plus system `libSystem`/`libz`; `DYLD_PRINT_LIBRARIES`
-confirmed all three non-system libraries loaded from a copied, relocated
-candidate after the original candidate and OpenSSL prefixes were hidden.
+confirmed the non-system libraries loaded from a copied, relocated candidate
+after the original candidate and OpenSSL prefixes were hidden.
 
 This remains an experiment, not a selected or release-ready payload. `strings`
 shows OpenSSL `OPENSSLDIR`/`MODULESDIR` and libpq's compiled system-config path
@@ -129,6 +129,33 @@ full database integration and race suites, and default/integration `go vet` also
 passed. This host is macOS 27.0: `minos 13.0` metadata is not runtime
 qualification on macOS 13. No signing, notarization, redistribution, hosted
 backup, or restore was performed.
+
+### Private real-client extraction smoke (2026-09-26)
+
+Built and relocated the missing `psql` 17.11 executable from the same private
+PostgreSQL source candidate. Its `@rpath/libpq.5.dylib` load command and
+`LC_BUILD_VERSION minos 13.0` were inspected. After hiding the original build
+prefixes, `DYLD_PRINT_LIBRARIES` showed `psql --version` loading `libpq`,
+`libssl`, and `libcrypto` from the relocated adjacent `lib/` directory and
+printing `psql (PostgreSQL) 17.11`.
+
+Added opt-in `integration` test
+`internal/tools/candidate_integration_test.go`. With an explicitly supplied
+private client `bin/` directory, it builds an in-memory six-file gzip/USTAR
+archive and temporary manifest, runs the existing private extractor and package
+validator, then invokes extracted `pg_dump`, `pg_restore`, and `psql` using only
+`--version` through SPARC's bounded process runner. All three printed exactly
+PostgreSQL 17.11 on Darwin 27.0 arm64. With no client path supplied, the test
+skips. The temporary manifest and archive do not modify `productionPayloads`
+or persist as a package. This proves extraction/runner mechanics on this host
+only; it does not qualify macOS 13, a clean machine, signing, a release payload,
+redistribution, or hosted operations.
+
+Fresh `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off` verification passed:
+`go test -mod=readonly ./... -count=1`, the opt-in real-client extraction test,
+full `internal/database` integration and race suites, `go vet ./...`, and
+integration-tagged vet for `internal/tools` and `internal/database`. No hosted
+access occurred.
 
 EDB PostgreSQL binary archives are retained only as an **uninspected control
 candidate** (<https://www.enterprisedb.com/download-postgresql-binaries>). No
