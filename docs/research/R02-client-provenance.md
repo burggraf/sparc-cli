@@ -162,6 +162,28 @@ candidate** (<https://www.enterprisedb.com/download-postgresql-binaries>). No
 EDB archive, direct artifact URL, checksum, architecture slice, dependency tree,
 notice file, license conclusion, or redistribution conclusion was inspected.
 
+### Minimum-macOS policy checkpoint (2026-09-26)
+
+The current test host is an M1 `MacBookAir10,1` running macOS 27.0. The
+Virtualization framework is available. `softwareupdate --list-full-installers`
+reports a Ventura 13.7.8 installer (11,919,053 KiB) and a Sequoia 15.8
+installer (15,296,950 KiB). No installer was downloaded and no guest VM was
+created. The completed recovery evidence above qualifies only the current
+macOS 27 host, not a macOS 13 or 15 guest.
+
+The Apple [security-release history](https://support.apple.com/en-us/100100)
+currently lists macOS 27, 26, and Sequoia 15.8 releases in September 2026; its
+latest Ventura entry remains 13.7.8, dated August 20, 2025. This is evidence
+that the Ventura line is outside the current update cadence, not a formal Apple
+end-of-life declaration. Do not infer a supported OS floor from `minos 13.0`.
+The owner must choose between a security-current minimum and an explicit older
+OS support policy before a VM test or release claim is useful. Apple's
+[macOS-on-Apple-silicon VM guide](https://developer.apple.com/documentation/virtualization/running-macos-in-a-virtual-machine-on-apple-silicon)
+and [installation guide](https://developer.apple.com/documentation/virtualization/installing-macos-on-a-virtual-machine)
+describe image-specific guest/configuration requirements; they do not qualify
+Ventura runtime on this host. No hosted resource, signing identity, payload, or
+redistribution action was used.
+
 ## Explicitly unverified payload facts
 
 For macOS amd64 and Windows amd64, all of the following remain unverified:

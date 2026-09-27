@@ -1494,3 +1494,15 @@ read-only metadata evidence remains separately scoped and does not authorize
 capture or restore. The production payload inventory remains empty; normal CLI
 operations, client selection, signing, redistribution, other OS runtime
 qualification, and hosted Task 12 remain blocked.
+
+### Release-floor research checkpoint (2026-09-26)
+
+The current host is an M1 MacBookAir10,1 on macOS 27.0; all native recovery
+proof remains on that OS. Apple currently offers Sequoia 15.8 and Ventura 13.7.8
+installers, but no guest image was downloaded and no VM was created. Apple's
+security-release history shows Ventura's latest entry as 13.7.8 in August 2025,
+while macOS 27/26/15.8 received September 2026 releases. This is a policy input,
+not a formal EOL claim. See [R02](research/R02-client-provenance.md). The
+product owner must choose a minimum-OS policy before we spend roughly 12–15 GB
+on a guest image or make any support claim; payload selection, signing, and
+redistribution remain separate approvals.
