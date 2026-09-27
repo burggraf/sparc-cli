@@ -1557,3 +1557,36 @@ phase is not runnable with current code: `productionPayloads` is empty and
 `RunCandidate` is integration-only with `PGHOSTADDR=127.0.0.1`. Do not change
 the loopback boundary or select a production payload without separate design
 and approval.
+
+### Local encrypted database backup CLI (2026-09-26)
+
+The normal CLI now exposes `sparc backup` for a deliberately narrow, usable
+path: an operator provides an exact project ref, a private qualified Supavisor
+session-pooler URL file, a new local archive directory below a private parent,
+an archive passphrase, and an explicit PostgreSQL 17 macOS arm64 client `bin`
+directory. The URL/password never enter argv and `PATH` is not searched. The
+external client is privately re-packaged and validated before the existing
+read-only observation and streaming encrypted `pg_dump` pipeline runs.
+
+This creates one encrypted database component and intentionally exits `3` with
+an `incomplete` capture declaration. It excludes Auth, Storage, Functions,
+Vault, configuration, roles/globals and provider-managed services; remote
+folders and normal restore remain unavailable. It is a database-backup slice,
+not a complete Supabase project backup claim. No hosted backup was run.
+
+TDD evidence: `TestParseSupavisorSessionURL` initially failed because the
+production parser was undefined; `TestRunExternalRejectsInvalidInputs` initially
+failed because the explicit runner was undefined; and `TestRunBackup*` initially
+failed because the command was unavailable. Current focused CLI/database/tools
+suites pass. `sparc-localdemo` passed on a fresh loopback PostgreSQL 17 fixture:
+synthetic capture, offline archive verification, source deletion, and fresh
+target restore completed. The normal offline verifier returned the intended
+exit `3` for that incomplete archive.
+
+Fresh macOS arm64 verification passed after the archive-parent preflight change:
+`go test -mod=readonly ./... -count=1 -timeout=240s`; serialized
+`go test -mod=readonly -race -p=1 ./... -count=1 -timeout=600s`; local
+PostgreSQL 17 tools/database integration, including its race run, with the
+private candidate client; default and integration `go vet`; a Windows AMD64 CLI
+test cross-compile; and the localdemo rehearsal above. Cross-compilation is not
+Windows runtime qualification.

@@ -2,7 +2,7 @@
 
 SPARC (Supabase Project ARChiver) is a Go command-line project for a future Supabase project backup and recovery tool.
 
-> **Limited local milestone:** `sparc verify` checks encrypted archive integrity offline. It does not prove complete project coverage or recoverability. `backup` and `restore` remain unavailable, and hosted Supabase support is not claimed.
+> **Current usable slice:** `sparc backup` creates an encrypted local PostgreSQL database archive using an explicitly selected local PostgreSQL 17 macOS arm64 client. It is deliberately marked incomplete: it does not include Auth, Storage, Functions, Vault, project configuration, cluster roles/globals, or provider-managed services. `restore` remains unavailable and hosted Supabase recovery support is not claimed.
 
 ## Commands
 
@@ -10,11 +10,26 @@ SPARC (Supabase Project ARChiver) is a Go command-line project for a future Supa
 sparc help
 sparc version
 sparc verify --help
-sparc backup  # unavailable
+sparc backup --help
 sparc restore # unavailable
 ```
 
 `help`, `version`, and `verify` do not access the network. Verification passphrases are requested without terminal echo, or can be read from an explicitly selected private file.
+
+## Create a local encrypted database archive
+
+`backup` needs four explicit inputs: a project ref, a private file containing a qualified Supavisor **session-pooler** URL, a new archive directory below an existing private parent, and the exact `bin` directory of an unbundled PostgreSQL 17 macOS arm64 client. It never accepts a database URL/password in argv and never searches `PATH`. The six client files are privately copied and validated before execution; this is a developer path, not bundled-client or cross-platform support.
+
+```sh
+mkdir -m 700 "$HOME/sparc-backups"
+./sparc backup \
+  --project-ref YOUR_PROJECT_REF \
+  --database-url-file "$HOME/Library/Application Support/sparc/hosted-session-url" \
+  --archive "$HOME/sparc-backups/database-2026-09-26" \
+  --pg-client-bin /absolute/path/to/pg17/bin
+```
+
+The command prompts for an archive passphrase without echo unless you add `--passphrase-file /absolute/private/file`. It prints `Database archive created.` and exits **3**, meaning the encrypted archive is intact but deliberately incomplete. Run `sparc verify` with the same passphrase to verify it offline. This command needs separate authorization before it is pointed at any hosted project; it has not been run as a hosted backup in this repository. Remote folders are not supported yet.
 
 ## Try developer-only backup/restore
 
@@ -35,7 +50,7 @@ go build -o ./sparc ./cmd/sparc
 ./sparc verify --archive "$HOME/sparc-demo/archive"
 ```
 
-The separate integration test is also available: `SPARC_TEST_PG_BIN=/absolute/path/to/postgresql-17/bin go test -tags=integration ./internal/database -run '^TestLocalRecoveryRehearsal$' -count=1 -v`. If the variable is unset, it skips. Native Windows runtime for this demo remains unqualified. This workflow does not enable `sparc backup`/`restore`, hosted Supabase support, production client packaging, arbitrary database connections, or full-project coverage.
+The separate integration test is also available: `SPARC_TEST_PG_BIN=/absolute/path/to/postgresql-17/bin go test -tags=integration ./internal/database -run '^TestLocalRecoveryRehearsal$' -count=1 -v`. If the variable is unset, it skips. Native Windows runtime for this demo remains unqualified. This workflow does not prove hosted Supabase capture, restore, production client packaging, arbitrary database connections, remote folders, or full-project coverage.
 
 ## Development
 

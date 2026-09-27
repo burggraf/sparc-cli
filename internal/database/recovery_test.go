@@ -422,9 +422,17 @@ func captureTestRequest(t *testing.T) CaptureRequest {
 
 func restoreTestRequest(t *testing.T) RestoreRequest {
 	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal("unable to resolve restore test root")
+	}
+	privateDir := filepath.Join(root, "private")
+	if err := platform.CreatePrivateDir(privateDir); err != nil {
+		t.Fatal("unable to create private restore test directory")
+	}
 	return RestoreRequest{
 		Target: validConnectionParams(t), TargetPassword: []byte("synthetic-target-password"),
-		ArchivePath: t.TempDir() + "/archive", ArchivePassphrase: recoveryTestPassphrase,
+		ArchivePath: filepath.Join(privateDir, "archive"), ArchivePassphrase: recoveryTestPassphrase,
 		EmptyScope: EmptyTargetScopeV1{RequiredPresent: []string{"public"}, RequiredAbsent: []string{"sparc_app"}},
 	}
 }
