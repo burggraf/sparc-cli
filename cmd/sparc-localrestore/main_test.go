@@ -8,6 +8,14 @@ import (
 	"testing"
 )
 
+func TestInspectCannotEnableRawDiagnostics(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--archive", "missing", "--inspect", "--show-postgres-error"}, nil, &stdout, &stderr)
+	if code != 2 || stdout.Len() != 0 || stderr.String() != "sparc-localrestore: --inspect cannot be combined with --show-postgres-error\n" {
+		t.Fatalf("inspect arguments = %d, %q", code, stderr.String())
+	}
+}
+
 func TestLocalRestoreRawDiagnosticsRequireTerminalBeforeReadingArchive(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--archive", "missing", "--show-postgres-error"}, nil, &stdout, &stderr)

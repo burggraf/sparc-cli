@@ -52,6 +52,14 @@ func TestClassifyRestoreFailureWithoutExposingPostgresOutput(t *testing.T) {
 	}
 }
 
+func TestSummarizeArchiveTOCWithoutIdentifiers(t *testing.T) {
+	input := "; Archive header\n1; 2615 100 SCHEMA - auth supabase_admin\n2; 1259 101 TABLE auth users supabase_admin\n3; 0 101 TABLE DATA auth users supabase_admin\n4; 1259 102 TABLE public items postgres\n5; 0 102 TABLE DATA public items postgres\n6; 3079 103 EXTENSION - pgcrypto postgres\n"
+	summary, err := summarizeArchiveTOC([]byte(input))
+	if err != nil || summary.Total != 6 || summary.Auth != 3 || summary.Public != 2 || summary.Storage != 0 || summary.Extension != 1 {
+		t.Fatalf("TOC summary = %#v, %v", summary, err)
+	}
+}
+
 func TestPostgresMajorParsesClientOutput(t *testing.T) {
 	for output, want := range map[string]int{
 		"pg_dump (PostgreSQL) 17.9 (Homebrew)": 17,

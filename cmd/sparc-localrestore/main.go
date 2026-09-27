@@ -25,6 +25,7 @@ a private Unix socket, is stopped and removed afterward, and never connects to
 Supabase or an existing PostgreSQL service. The archive is read-only. This
 executes SQL from the archive: use only an archive you trust. A successful
 restore does not establish completeness against the hosted source.
+--inspect lists only TOC counts locally; no database server or network access.
 --show-postgres-error prints up to 64 KiB of raw PostgreSQL errors on your
 terminal. They may include sensitive SQL or object names: DO NOT paste them.
 `
@@ -35,11 +36,12 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sparc-localrestore", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var archivePath, passphraseFile string
-	var help, showPostgresError bool
+	var help, showPostgresError, inspect bool
 	flags.StringVar(&archivePath, "archive", "", "existing encrypted SPARC archive")
 	flags.StringVar(&passphraseFile, "passphrase-file", "", "file containing archive passphrase")
 	flags.BoolVar(&help, "help", false, "show help")
 	flags.BoolVar(&showPostgresError, "show-postgres-error", false, "show raw PostgreSQL error locally (may contain sensitive SQL)")
+	flags.BoolVar(&inspect, "inspect", false, "print only archive TOC counts without connecting")
 	if flags.Parse(args) != nil || flags.NArg() != 0 {
 		fmt.Fprintln(stderr, "sparc-localrestore: invalid arguments")
 		return 2
@@ -52,6 +54,10 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	}
 	if archivePath == "" {
 		fmt.Fprintln(stderr, "sparc-localrestore: --archive is required")
+		return 2
+	}
+	if showPostgresError && inspect {
+		fmt.Fprintln(stderr, "sparc-localrestore: --inspect cannot be combined with --show-postgres-error")
 		return 2
 	}
 	if showPostgresError {
@@ -88,6 +94,17 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	}()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	if inspect {
+		summary, err := localdemo.InspectArchiveTOC(ctx, "/opt/homebrew/opt/postgresql@17/bin", archivePath, passphrase)
+		if err != nil {
+			fmt.Fprintln(stderr, "sparc-localrestore: archive TOC inspection failed")
+			return 1
+		}
+		if _, err := fmt.Fprintf(stdout, "Archive TOC entries: %d\nEntries mentioning auth: %d\nEntries mentioning public: %d\nEntries mentioning storage: %d\nExtension entries: %d\n", summary.Total, summary.Auth, summary.Public, summary.Storage, summary.Extension); err != nil {
+			return 1
+		}
+		return 0
+	}
 	var restoreErr error
 	if showPostgresError {
 		restoreErr = localdemo.RehearseExistingArchiveWithDiagnostics(ctx, "/opt/homebrew/opt/postgresql@17/bin", archivePath, passphrase, stderr)

@@ -52,8 +52,12 @@ Enter the **existing archive passphrase** when prompted; never put it in the
 command line or chat. The command uses `/opt/homebrew/opt/postgresql@17/bin` and
 requires it to be installed. A passing synthetic test does not mean your archive
 was restored: run the command above on your actual archive to learn that result.
-If PostgreSQL rejects a restore and the fixed error category is inconclusive,
-rerun with `--show-postgres-error` to see the first 64 KiB of raw diagnostic on
+For a read-only inventory of the encrypted dump (no server or network), run
+`go run -tags=localdemo ./cmd/sparc-localrestore --archive ./tmp/test --inspect`
+and enter the archive passphrase. It prints only TOC counts; these are not proof
+that the target can accept every object. If PostgreSQL rejects a restore and the
+fixed error category is inconclusive, rerun with `--show-postgres-error` to see
+the first 64 KiB of raw diagnostic on
 your terminal. It may contain SQL, identifiers, or other sensitive data: **do
 not paste that output into chat or logs**. This option refuses redirected stderr.
 

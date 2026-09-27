@@ -49,6 +49,10 @@ func TestRehearseExistingArchiveOnDisposablePostgres17(t *testing.T) {
 	if err != nil || closeErr != nil {
 		t.Fatalf("package synthetic dump: %v / %v", err, closeErr)
 	}
+	summary, err := InspectArchiveTOC(context.Background(), binDir, backup, []byte(passphrase))
+	if err != nil || summary.Total == 0 {
+		t.Fatalf("local TOC inspection failed: %#v / %v", summary, err)
+	}
 	if err := RehearseExistingArchive(context.Background(), binDir, backup, []byte(passphrase)); err != nil {
 		t.Fatalf("disposable local restore failed: %v", err)
 	}
