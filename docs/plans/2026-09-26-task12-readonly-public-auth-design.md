@@ -116,6 +116,10 @@ If any item is missing or a query would exceed this scope, do not connect. The h
 
 A pass only establishes the listed metadata observation on that project and date. Actual Task 12 still requires separate authorization for a disposable synthetic source/target, fixture writes, Auth password-login checks, restore, and cleanup; this read-only phase cannot be reported as Auth recovery qualification.
 
+## Remaining Task 12 readiness gate
+
+No hosted recovery or Auth behavior test is currently executable with the approved recovery path. `internal/tools.productionPayloads` is empty, so the normal CLI has no database clients and backup/restore remain unavailable. `RunCandidate` is integration-only and pins `PGHOSTADDR` to loopback; it cannot serve as a hosted runner. Do not treat the metadata probe as authorization to relax that boundary, select a production payload, or use a hosted dump/restore path. A reviewed hosted-test runner and separate client/payload approval must come first; only then is it useful to request exact disposable source/target refs and a new fixture/login/restore/cleanup scope.
+
 ## Stop conditions and evidence
 
 Stop on non-PostgreSQL-17, unqualified route, failed TLS/read-only checks, unavailable schemas, missing privileges, unknown response/catalog shape, limits, timeout, or any request/response indicating access to user data. No retry or permission escalation. Record command, commit, versions, route class, result categories, omissions and exit status only after approval; keep raw metadata and credentials out of the repository.

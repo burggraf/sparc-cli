@@ -1552,4 +1552,8 @@ universal Supabase baseline, Auth login, or recovery qualification. The one-run
 authorization is consumed; any repeat or broader hosted action requires fresh
 exact-scope approval. Auth login, synthetic hosted writes, target work,
 backup/restore, Management/Auth REST access, normal CLI exposure, and production
-payload selection remain unauthorized.
+payload selection remain unauthorized. The next hosted recovery/Auth behavior
+phase is not runnable with current code: `productionPayloads` is empty and
+`RunCandidate` is integration-only with `PGHOSTADDR=127.0.0.1`. Do not change
+the loopback boundary or select a production payload without separate design
+and approval.
