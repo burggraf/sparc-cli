@@ -223,7 +223,7 @@ func TestRunAtomicSQLRestoreUsesPSQLSingleTransactionAndBoundedInput(t *testing.
 		t.Fatal("atomic SQL restore request rejected")
 	}
 	args, err := runArguments(request)
-	want := []string{"-X", "--single-transaction", "--set=ON_ERROR_STOP=1", "--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}
+	want := []string{"-X", "-q", "-t", "--single-transaction", "--set=ON_ERROR_STOP=1", "--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}
 	if err != nil || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("atomic SQL restore args = %#v / %v; want fixed psql transaction args", args, err)
 	}

@@ -1,7 +1,6 @@
 package database
 
 import (
-	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -19,18 +18,23 @@ import (
 )
 
 const (
-	databaseDumpKey       = "database/postgresql.dump"
-	databaseDumpScope     = "one full PostgreSQL database; cluster globals and provider-managed services are excluded"
-	schemaSQLKey          = "database/schema.sql"
-	dataSQLKey            = "database/data.sql"
-	recoveryProfileKey    = "database/recovery-profile.json"
-	recoveryProfileFormat = "sparc-recovery-profile"
-	schemaSQLScope        = "application schema DDL for public only; managed schema DDL excluded"
-	dataSQLScope          = "public, Auth, and Storage table data with fixed exclusions"
-	recoveryProfileScope  = "versioned database capture profile; completeness limitations declared"
-	databaseToolTimeout   = 6 * time.Hour
-	maxToolStderrBytes    = 1 << 20
-	maxNativeRootBytes    = 1 << 20
+	databaseDumpKey               = "database/postgresql.dump"
+	databaseDumpScope             = "one full PostgreSQL database; cluster globals and provider-managed services are excluded"
+	schemaSQLKey                  = "database/schema.sql"
+	dataSQLKey                    = "database/data.sql"
+	recoveryProfileKey            = "database/recovery-profile.json"
+	recoveryProfileFormat         = "sparc-recovery-profile"
+	recoveryProfileVersion        = 2
+	schemaSQLScope                = "application schema DDL for public only; public schema creation made idempotent; managed schema DDL excluded"
+	dataSQLScope                  = "public, Auth, and Storage table data with fixed exclusions"
+	recoveryProfileScope          = "versioned database capture profile; completeness limitations declared"
+	recoveryRolesMissing          = "custom roles and memberships are not captured"
+	recoverySnapshotGap           = "schema and data dumps use separate source sessions; a shared snapshot is not established"
+	recoveryFingerprintAlgorithm  = "sha256-xor-sum-v1"
+	recoveryPublicSchemaTransform = "CREATE SCHEMA public -> CREATE SCHEMA IF NOT EXISTS public"
+	databaseToolTimeout           = 6 * time.Hour
+	maxToolStderrBytes            = 1 << 20
+	maxNativeRootBytes            = 1 << 20
 )
 
 var ErrCapture = errors.New("database capture failed")
@@ -64,27 +68,32 @@ func CaptureSplit(ctx context.Context, request CaptureRequest) (archive.Manifest
 	return captureSplitWith(ctx, request, defaultRecoveryOps())
 }
 
-type RecoveryProfileV1 struct {
-	Format              string                     `json:"format"`
-	Version             int                        `json:"version"`
-	CaptureStatus       string                     `json:"capture_status"`
-	SourcePostgresMajor int                        `json:"source_postgres_major"`
-	SourceVersionNum    int                        `json:"source_version_num"`
-	ClientVersion       string                     `json:"client_version"`
-	SchemaDump          recoveryDumpProfile        `json:"schema_dump"`
-	DataDump            recoveryDumpProfile        `json:"data_dump"`
-	ExcludedTables      []recoveryProfileTable     `json:"excluded_tables"`
-	Extensions          []recoveryProfileExtension `json:"extensions"`
-	Roles               recoveryCoverageProfile    `json:"roles"`
-	Snapshot            recoveryCoverageProfile    `json:"snapshot_consistency"`
-	Unknowns            []string                   `json:"unknowns"`
+type RecoveryProfileV2 struct {
+	Format                    string                     `json:"format"`
+	Version                   int                        `json:"version"`
+	CaptureStatus             string                     `json:"capture_status"`
+	SourceProjectRef          string                     `json:"source_project_ref"`
+	SourcePostgresMajor       int                        `json:"source_postgres_major"`
+	SourceVersionNum          int                        `json:"source_version_num"`
+	PublicSchemaOwner         string                     `json:"public_schema_owner"`
+	ClientVersion             string                     `json:"client_version"`
+	SchemaDump                recoveryDumpProfile        `json:"schema_dump"`
+	DataDump                  recoveryDumpProfile        `json:"data_dump"`
+	ExcludedTables            []recoveryProfileTable     `json:"excluded_tables"`
+	Extensions                []recoveryProfileExtension `json:"extensions"`
+	TableFingerprintAlgorithm string                     `json:"table_fingerprint_algorithm"`
+	TableFingerprints         []RecoveryTableFingerprint `json:"table_fingerprints"`
+	Roles                     recoveryCoverageProfile    `json:"roles"`
+	Snapshot                  recoveryCoverageProfile    `json:"snapshot_consistency"`
+	Unknowns                  []string                   `json:"unknowns"`
 }
 
 type recoveryDumpProfile struct {
-	Key     string   `json:"key"`
-	Mode    string   `json:"mode"`
-	Schemas []string `json:"schemas"`
-	Status  string   `json:"status"`
+	Key        string   `json:"key"`
+	Mode       string   `json:"mode"`
+	Schemas    []string `json:"schemas"`
+	Status     string   `json:"status"`
+	Transforms []string `json:"transforms"`
 }
 
 type recoveryProfileTable struct {
@@ -153,26 +162,34 @@ func captureSplitWith(ctx context.Context, request CaptureRequest, ops recoveryO
 	if err != nil || observation.ServerVersionNum < 170000 || observation.ServerVersionNum >= 180000 {
 		return archive.Manifest{}, ErrCapture
 	}
-	profile, err := json.Marshal(makeRecoveryProfile(observation))
-	if err != nil {
-		return archive.Manifest{}, ErrCapture
-	}
 	schemaReader, schemaWriter := io.Pipe()
 	dataReader, dataWriter := io.Pipe()
-	schemaSink, dataSink := &archivePipeSink{writer: schemaWriter}, &archivePipeSink{writer: dataWriter}
+	profileReader, profileWriter := io.Pipe()
+	fingerprintReader, fingerprintWriter := io.Pipe()
+	schemaArchiveSink := &archivePipeSink{writer: schemaWriter}
+	schemaSink := newPublicSchemaTransformSink(schemaArchiveSink)
+	dataSink := &archivePipeSink{writer: dataWriter}
+	dataSource := &fingerprintTeeReader{source: dataReader, tee: fingerprintWriter}
+	fingerprintResult := make(chan copyFingerprintResult, 1)
+	go func() {
+		fingerprints, err := parseCopyDataFingerprints(fingerprintReader)
+		_ = fingerprintReader.Close()
+		fingerprintResult <- copyFingerprintResult{fingerprints: fingerprints, err: err}
+	}()
 	archiveResult := make(chan archiveWriteResult, 1)
 	go func() {
 		defer schemaReader.Close()
 		defer dataReader.Close()
+		defer profileReader.Close()
 		manifest, err := ops.create(request.ArchivePath, []archive.Input{
 			{Key: schemaSQLKey, Scope: schemaSQLScope, Status: "incomplete", Source: schemaReader},
-			{Key: dataSQLKey, Scope: dataSQLScope, Status: "incomplete", Source: dataReader},
-			{Key: recoveryProfileKey, Scope: recoveryProfileScope, Status: "complete", Source: bytes.NewReader(profile)},
+			{Key: dataSQLKey, Scope: dataSQLScope, Status: "incomplete", Source: dataSource},
+			{Key: recoveryProfileKey, Scope: recoveryProfileScope, Status: "complete", Source: profileReader},
 		}, request.ArchivePassphrase)
 		archiveResult <- archiveWriteResult{manifest: manifest, err: err}
 	}()
 
-	runDump := func(mode tools.RunMode, schemas []string, exclusions []tools.TableRef, sink *archivePipeSink) (tools.RunResult, error) {
+	runDump := func(mode tools.RunMode, schemas []string, exclusions []tools.TableRef, sink tools.AbortableOutputSink) (tools.RunResult, error) {
 		result, runErr := ops.run(ctx, tools.RunRequest{
 			Tool: tools.PGDump, Mode: mode, DumpSchemas: schemas, ExcludedTables: exclusions,
 			Connection: &tools.PGConnection{
@@ -201,17 +218,43 @@ func captureSplitWith(ctx context.Context, request CaptureRequest, ops recoveryO
 	if schemaErr != nil || schemaResult.ExitCode != 0 {
 		_ = schemaSink.AbortContext(context.Background())
 		_ = dataSink.AbortContext(context.Background())
+		_ = dataSource.Close()
 	} else {
 		dataResult, dataErr = runDump(tools.ModeDumpData, []string{"public", "auth", "storage"}, recoveryDataExclusions(), dataSink)
 		if dataErr != nil || dataResult.ExitCode != 0 {
 			_ = dataSink.AbortContext(context.Background())
 		}
 	}
+	fingerprints := <-fingerprintResult
+	validDumps := schemaErr == nil && schemaResult.ExitCode == 0 && dataErr == nil && dataResult.ExitCode == 0 && fingerprints.err == nil
+	if validDumps {
+		profile := makeRecoveryProfile(observation, request.Source.ExpectedProjectRef)
+		profile.TableFingerprints = fingerprints.fingerprints
+		profileBytes, marshalErr := json.Marshal(profile)
+		if !validRecoveryProfileV2(profile) {
+			err = ErrRecoveryProfile
+		} else if marshalErr == nil && len(profileBytes) <= maxRecoveryProfileBytes {
+			_, err = profileWriter.Write(profileBytes)
+			if err == nil {
+				err = profileWriter.Close()
+			}
+		} else if marshalErr != nil {
+			err = marshalErr
+		} else {
+			err = ErrRecoveryProfile
+		}
+	} else {
+		err = ErrCapture
+	}
+	if err != nil {
+		_ = profileWriter.CloseWithError(ErrCapture)
+	}
+	_ = dataSource.Close()
 	archived := <-archiveResult
 	if errors.Is(schemaErr, tools.ErrPayloadUnavailable) || errors.Is(dataErr, tools.ErrPayloadUnavailable) {
 		return archive.Manifest{}, tools.ErrPayloadUnavailable
 	}
-	if schemaErr != nil || schemaResult.ExitCode != 0 || dataErr != nil || dataResult.ExitCode != 0 || archived.err != nil || !validSplitCaptureManifest(archived.manifest) {
+	if !validDumps || err != nil || archived.err != nil || !validSplitCaptureManifest(archived.manifest) {
 		return archive.Manifest{}, ErrCapture
 	}
 	return archived.manifest, nil
@@ -241,23 +284,25 @@ func prepareCapture(ctx context.Context, request CaptureRequest, ops recoveryOps
 	return rootCert, observation, nil
 }
 
-func makeRecoveryProfile(observation CatalogObservation) RecoveryProfileV1 {
+func makeRecoveryProfile(observation CatalogObservation, sourceProjectRef string) RecoveryProfileV2 {
 	excluded := recoveryDataExclusions()
-	profile := RecoveryProfileV1{
-		Format: recoveryProfileFormat, Version: 1, CaptureStatus: "incomplete",
-		SourcePostgresMajor: observation.ServerMajor, SourceVersionNum: observation.ServerVersionNum, ClientVersion: "PostgreSQL 17.11",
-		SchemaDump:     recoveryDumpProfile{Key: schemaSQLKey, Mode: "schema-only", Schemas: []string{"public"}, Status: "incomplete"},
-		DataDump:       recoveryDumpProfile{Key: dataSQLKey, Mode: "data-only", Schemas: []string{"public", "auth", "storage"}, Status: "incomplete"},
+	publicOwner := ""
+	for _, schema := range observation.Schemas {
+		if schema.Name == "public" && schema.Present {
+			publicOwner = schema.Owner
+			break
+		}
+	}
+	profile := RecoveryProfileV2{
+		Format: recoveryProfileFormat, Version: recoveryProfileVersion, CaptureStatus: "incomplete", SourceProjectRef: sourceProjectRef,
+		SourcePostgresMajor: observation.ServerMajor, SourceVersionNum: observation.ServerVersionNum, PublicSchemaOwner: publicOwner, ClientVersion: "PostgreSQL 17.11",
+		SchemaDump:     recoveryDumpProfile{Key: schemaSQLKey, Mode: "schema-only", Schemas: []string{"public"}, Status: "incomplete", Transforms: []string{recoveryPublicSchemaTransform}},
+		DataDump:       recoveryDumpProfile{Key: dataSQLKey, Mode: "data-only", Schemas: []string{"public", "auth", "storage"}, Status: "incomplete", Transforms: []string{}},
 		ExcludedTables: make([]recoveryProfileTable, len(excluded)), Extensions: make([]recoveryProfileExtension, len(observation.Extensions)),
-		Roles:    recoveryCoverageProfile{Status: "missing", Reason: "custom roles and memberships are not captured"},
-		Snapshot: recoveryCoverageProfile{Status: "unqualified", Reason: "schema and data dumps use separate source sessions; a shared snapshot is not established"},
-		Unknowns: []string{
-			"Only public schema DDL is selected; additional application schemas are not inventoried or captured.",
-			"Pre-existing public schema ownership and database-wide DDL semantics are not qualified for restore.",
-			"Managed-schema customizations, extension DDL compatibility, publications, event triggers, and cross-database dependencies are not qualified.",
-			"Custom roles, memberships, object ownership, and login credentials are not captured.",
-			"Storage object bytes, Auth service behavior, project settings, and provider-managed services are outside this database-only capture.",
-		},
+		TableFingerprintAlgorithm: recoveryFingerprintAlgorithm, TableFingerprints: []RecoveryTableFingerprint{},
+		Roles:    recoveryCoverageProfile{Status: "missing", Reason: recoveryRolesMissing},
+		Snapshot: recoveryCoverageProfile{Status: "unqualified", Reason: recoverySnapshotGap},
+		Unknowns: recoveryProfileUnknowns(),
 	}
 	for index, table := range excluded {
 		profile.ExcludedTables[index] = recoveryProfileTable{Schema: table.Schema, Name: table.Name}
@@ -266,6 +311,17 @@ func makeRecoveryProfile(observation CatalogObservation) RecoveryProfileV1 {
 		profile.Extensions[index] = recoveryProfileExtension{Name: extension.Name, Version: extension.Version, Schema: extension.Schema}
 	}
 	return profile
+}
+
+func recoveryProfileUnknowns() []string {
+	return []string{
+		"Only public schema DDL is selected; additional application schemas are not inventoried or captured.",
+		"Public schema ACLs and database-wide DDL semantics are not qualified for restore.",
+		"Managed-schema customizations, extension DDL compatibility, publications, event triggers, and cross-database dependencies are not qualified.",
+		"Custom roles, memberships, ownership beyond the recorded public schema owner, and login credentials are not captured.",
+		"Sequence state and large objects are captured by SQL but are not fingerprinted or verified.",
+		"Storage object bytes, Auth service behavior, project settings, and provider-managed services are outside this database-only capture.",
+	}
 }
 
 func recoveryDataExclusions() []tools.TableRef {
@@ -304,7 +360,7 @@ func defaultRecoveryOps() recoveryOps {
 		run:         tools.Run,
 		create:      destination.Create,
 		verify:      archive.Verify,
-		open:        openDatabaseDump,
+		open:        openArchiveComponent,
 	}
 }
 
@@ -358,6 +414,52 @@ func nativeRootCertPEM(params ConnectionParams) ([]byte, error) {
 type archiveWriteResult struct {
 	manifest archive.Manifest
 	err      error
+}
+
+type copyFingerprintResult struct {
+	fingerprints []RecoveryTableFingerprint
+	err          error
+}
+
+type fingerprintTeeReader struct {
+	source *io.PipeReader
+	tee    *io.PipeWriter
+	once   sync.Once
+}
+
+func (r *fingerprintTeeReader) Read(buffer []byte) (int, error) {
+	n, readErr := r.source.Read(buffer)
+	if n > 0 {
+		written, writeErr := r.tee.Write(buffer[:n])
+		if writeErr != nil || written != n {
+			r.closeTee(ErrRecoveryData)
+			return n, ErrRecoveryData
+		}
+	}
+	if readErr != nil {
+		if readErr == io.EOF {
+			r.closeTee(nil)
+		} else {
+			r.closeTee(ErrRecoveryData)
+		}
+	}
+	return n, readErr
+}
+
+func (r *fingerprintTeeReader) Close() error {
+	closeErr := r.source.Close()
+	r.closeTee(ErrCapture)
+	return closeErr
+}
+
+func (r *fingerprintTeeReader) closeTee(err error) {
+	r.once.Do(func() {
+		if err != nil {
+			_ = r.tee.CloseWithError(err)
+		} else {
+			_ = r.tee.Close()
+		}
+	})
 }
 
 type archivePipeSink struct {

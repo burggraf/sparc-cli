@@ -85,13 +85,26 @@ compatibility remain unimplemented. A production payload inventory remains
 empty.
 
 The [R17 Supabase-aware database profile](research/R17-supabase-cli-dump-profile.md)
-uses a separate, versioned encrypted `database/recovery-profile.json` component
+uses a separate, version-2 encrypted `database/recovery-profile.json` component
 inside the **existing** v1 container. New `sparc backup` captures contain
 `database/schema.sql`, `database/data.sql`, and that profile as three separately
-encrypted components; schema and data are marked `incomplete`, and the profile
-records explicit selection, exclusions, missing roles, and unqualified snapshot
-consistency. No container version or top-level manifest fields changed. Existing
+encrypted components; schema and data are marked `incomplete`. The profile records
+the source project reference, source public-schema owner, PostgreSQL/client
+versions, exact selections/exclusions, missing roles, unqualified snapshot
+consistency, and archive-derived per-table fingerprints.
+
+The schema stream rewrites only the top-level `CREATE SCHEMA public;` statement
+to `CREATE SCHEMA IF NOT EXISTS public;`; capture fails closed unless exactly one
+such statement is found. The profile records this transform. Data SQL remains
+unchanged. Fingerprints use the archived SQL `COPY` rows and verify table columns,
+row counts, and row-content aggregates before an internal split restore can
+commit. This does not verify sequences, large objects, ACL/RLS semantics, service
+behavior, or archive-time consistency.
+
+No container version or top-level manifest fields changed. Existing
 one-component `database/postgresql.dump` archives retain their original
-incomplete meaning. The current internal `Restore` still accepts only the legacy
-single dump, and public `sparc restore` remains unavailable; split capture is not
-yet a production recovery path.
+incomplete meaning. Older version-1 split profiles remain structurally
+verifiable but are refused by current split-restore validation;
+there is no profile upgrade path. The public `sparc restore` command remains
+unavailable; the internal split-restore experiment is not a production recovery
+path and has not been run against a hosted target.

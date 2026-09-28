@@ -1671,6 +1671,45 @@ behavior as missing or unqualified.
 
 Fresh checks passed: `go test ./... -count=1 -timeout=600s`,
 `go vet ./...`, focused `go test -race -p=1 ./internal/database -run '^TestCaptureSplit'`, the PG17.9 split-capture integration test, its focused race run, and the full tagged PostgreSQL client/database integration suite. No hosted
-connection or write was performed. The split profile is not yet accepted by
-internal `Restore` or the developer-only legacy restore path; public
-`sparc restore` remains unavailable.
+connection or write was performed. The split profile is not yet accepted by the production `Restore` entry point
+or developer-only legacy restore path; public `sparc restore` remains
+unavailable.
+
+### Task 5: archive-derived split restore guard (2026-09-28)
+
+**Status:** local implementation candidate only; qualification and production
+restore remain incomplete.
+
+The version-2 profile now records the source project reference and public schema
+owner, plus the pinned top-level public-schema idempotency transform. This
+version bump leaves older split profiles integrity-verifiable but refused by
+current split-restore validation rather than silently interpreting them as the new shape. Capture
+fails closed unless it finds exactly one top-level `CREATE SCHEMA public;`
+statement, without rewriting matching text inside quoted strings, comments, or
+function bodies. The profile parser rejects non-canonical/unknown fields,
+unsupported versions, invalid selections/transforms, and malformed fingerprints.
+
+Table fingerprints are computed from the encrypted archive's eligible SQL COPY
+data, not reread from the live source. An order-independent SHA-256 row
+multiset aggregate records table names, selected columns, row counts, and row
+content. Internal split restore verifies the declared target is a different
+project, checks the read-only PG17/TLS/empty-scope baseline, selected managed
+schemas, public-schema owner, and exact extension inventory. It runs schema,
+scoped replication-role setting, and data in one stop-on-error psql
+transaction; it releases the transaction input gate only after archive-derived
+row verification passes. `psql -t` suppresses pg_dump's `set_config` result
+formatting, and only blank tuples-only preamble lines before the first marker
+are ignored. Any other output, mismatch, or SQL/input failure prevents commit.
+
+A local PG17.9 integration test passed with archive-derived public/Auth/Storage
+rows, and confirmed target migration-history rows were retained. A deliberately
+wrong expected fingerprint rolled back imported schema/data and preserved target
+history. Unit tests cover
+row-order independence, content mismatch, empty rows, profile validation, and
+schema-statement transformation. Full local integration passed after the final
+runner changes. This is not archive-time fidelity: separate source dump
+sessions remain uncoordinated. Sequence state, large objects, roles/ownership,
+public ACL/RLS behavior, managed-schema customizations, service behavior,
+post-restore catalog/constraint/function equivalence, and full project recovery
+remain unqualified. No hosted connection or write occurred. `sparc restore`
+remains unavailable.

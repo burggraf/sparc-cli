@@ -118,22 +118,29 @@ interrupted archive must not appear finalized.
 `sparc backup` creates three separately encrypted archive-v1 components from a
 qualified Supavisor session-pooler route on macOS arm64: schema-only SQL for
 `public`, data-only SQL selected from `public`, `auth`, and `storage`, plus a
-version-1 `database/recovery-profile.json`. PostgreSQL 17.11 `pg_dump`, libpq,
+version-2 `database/recovery-profile.json`. PostgreSQL 17.11 `pg_dump`, libpq,
 and the OpenSSL runtime are embedded in the executable and privately
 extracted/validated by SPARC; no separately installed PostgreSQL client is
 required. The schema/data components are marked `incomplete`, and the profile
-records exact selectors/exclusions, source/client PostgreSQL versions, extension
-inventory, missing custom roles, and unqualified source-snapshot consistency.
+records the source project reference and public-schema owner, exact
+selectors/exclusions, source/client PostgreSQL versions, extension inventory,
+archive-derived eligible-table fingerprints, missing custom roles, and
+unqualified source-snapshot consistency. Schema DDL makes the top-level public
+schema creation idempotent; the profile records this transform.
 
 This is a narrow first capture, not a recovery claim. Non-public application
 schemas are not inventoried; Auth/Storage managed DDL and customizations,
-custom roles/ownership, a common schema/data snapshot, archive-derived fidelity,
+custom roles and object ownership beyond the recorded public schema owner, a
+common schema/data snapshot, archive-derived fidelity,
 Auth/Storage service behavior, and restore compatibility remain unqualified.
 Auth/Storage table data is included except fixed migration/vector exclusions;
 Storage object bytes, project-level configuration, cluster roles/globals,
-Functions, and other provider-managed services are not captured. The internal
-restore path still accepts only the legacy one-component archive, and public
-`sparc restore` is unavailable. Existing `database/postgresql.dump` archives
-such as `./tmp/test` keep their original incomplete meaning. Other platform
+Functions, and other provider-managed services are not captured. A private
+internal split-restore experiment verifies eligible table rows from the archive
+before commit against a declared local target baseline; it is not a production
+restore path and does not qualify complete schema, sequence, ACL/RLS, role, or
+service behavior. Public `sparc restore` remains unavailable. Existing
+`database/postgresql.dump` archives such as `./tmp/test` keep their original
+incomplete meaning. Other platform
 client payloads are not bundled. A successful command therefore exits `3`
 (intact archive with incomplete declared coverage), not full-project success.

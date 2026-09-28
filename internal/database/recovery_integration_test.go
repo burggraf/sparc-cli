@@ -5,7 +5,6 @@ package database
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -190,7 +189,7 @@ func TestContinueRestoreCanPartiallyWriteAfterSchemaConflict(t *testing.T) {
 	var diagnostic bytes.Buffer
 	_, err = tools.RunCandidate(ctx, tools.RunRequest{Tool: tools.PGRestore, Mode: tools.ModeRestoreContinue, Connection: connection, Input: io.NopCloser(bytes.NewReader(dump.Bytes())), InputLimit: uint64(dump.Len()), Timeout: time.Minute, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: fixtureOutputSink{}, Stderr: &diagnostic})
 	if err == nil || !strings.Contains(diagnostic.String(), "already exists") {
-		t.Fatalf("continued restore error=%v diagnostic=%q", err, diagnostic.String())
+		t.Fatalf("continued restore failed expected safety checks (err=%t, diagnostic-bytes=%d)", err != nil, diagnostic.Len())
 	}
 	var count int
 	if err := target.QueryRow(ctx, "SELECT count(*) FROM trial.items WHERE id=42").Scan(&count); err != nil || count != 1 {
@@ -437,6 +436,169 @@ func TestSupabaseManagedBaselineSplitRestoreIsAtomic(t *testing.T) {
 	t.Log("PASS: PG17 managed baseline rejects legacy full DDL; typed schema/data restore preserves migrations and trigger state, and rolls back late SQL/stream failures")
 }
 
+func TestSplitArchiveRestoreVerifiesArchiveRowsAtomically(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("bundled recovery proof targets macOS arm64")
+	}
+	fixture := newPostgresFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	const targetRef = "zyxwvutsrqponmlkjihgfedcba"
+	adminParams := fixture.params
+	adminParams.User = "postgres"
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForParams(t, fixture.caPath, adminParams))
+	if err != nil {
+		t.Fatal("unable to connect to local restore fixture administrator")
+	}
+	for _, statement := range []string{
+		"CREATE ROLE \"postgres." + targetRef + "\" SUPERUSER LOGIN PASSWORD '" + fixturePassword + "'",
+		"CREATE DATABASE sparc_split_source",
+		"CREATE DATABASE sparc_split_target",
+		"CREATE DATABASE sparc_split_mismatch",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to initialize local split restore fixture")
+		}
+	}
+	if err := admin.Close(ctx); err != nil {
+		t.Fatal("unable to close local fixture administrator")
+	}
+	connect := func(name, user string) *pgx.Conn {
+		t.Helper()
+		params := fixture.params
+		params.Database, params.User = name, user
+		db, err := pgx.ConnectConfig(ctx, fixture.configForParams(t, fixture.caPath, params))
+		if err != nil {
+			t.Fatal("unable to connect to local split restore database")
+		}
+		return db
+	}
+	source := connect("sparc_split_source", "postgres")
+	for _, statement := range []string{
+		"CREATE SCHEMA auth",
+		"CREATE TABLE auth.users (id integer PRIMARY KEY, email text NOT NULL)",
+		"CREATE TABLE auth.schema_migrations (version text PRIMARY KEY)",
+		"INSERT INTO auth.users VALUES (17, 'archive-user')",
+		"INSERT INTO auth.schema_migrations VALUES ('source-history')",
+		"CREATE SCHEMA storage",
+		"CREATE TABLE storage.objects (id integer PRIMARY KEY, name text NOT NULL)",
+		"CREATE TABLE storage.migrations (version text PRIMARY KEY)",
+		"INSERT INTO storage.objects VALUES (23, 'archive-object')",
+		"INSERT INTO storage.migrations VALUES ('source-storage-history')",
+		"CREATE TABLE public.sparc_split_items (id integer PRIMARY KEY, value text NOT NULL)",
+		"INSERT INTO public.sparc_split_items VALUES (31, 'archive-public-row')",
+	} {
+		if _, err := source.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to seed local split restore source")
+		}
+	}
+	if err := source.Close(ctx); err != nil {
+		t.Fatal("unable to close local split restore source")
+	}
+	target := connect("sparc_split_target", "postgres")
+	mismatchTarget := connect("sparc_split_mismatch", "postgres")
+	for _, db := range []*pgx.Conn{target, mismatchTarget} {
+		for _, statement := range []string{
+			"CREATE SCHEMA auth",
+			"CREATE TABLE auth.users (id integer PRIMARY KEY, email text NOT NULL)",
+			"CREATE TABLE auth.schema_migrations (version text PRIMARY KEY)",
+			"INSERT INTO auth.schema_migrations VALUES ('target-history')",
+			"CREATE SCHEMA storage",
+			"CREATE TABLE storage.objects (id integer PRIMARY KEY, name text NOT NULL)",
+			"CREATE TABLE storage.migrations (version text PRIMARY KEY)",
+			"INSERT INTO storage.migrations VALUES ('target-storage-history')",
+		} {
+			if _, err := db.Exec(ctx, statement); err != nil {
+				t.Fatal("unable to seed local managed target baseline")
+			}
+		}
+	}
+	defer target.Close(ctx)
+	defer mismatchTarget.Close(ctx)
+	params := fixture.params
+	params.Database, params.User = "sparc_split_source", "postgres"
+	privateRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal("unable to resolve local split archive root")
+	}
+	privateDir := filepath.Join(privateRoot, "private")
+	if err := platform.CreatePrivateDir(privateDir); err != nil {
+		t.Fatal("unable to create local split archive directory")
+	}
+	const passphrase = "synthetic-split-restore-passphrase"
+	archivePath := filepath.Join(privateDir, "archive")
+	captureOps := defaultRecoveryOps()
+	captureOps.observe, captureOps.run = fixtureRecoveryObserver(t, fixture), fixtureCandidateRunner(fixture)
+	manifest, err := captureSplitWith(ctx, CaptureRequest{Source: params, SourcePassword: []byte(fixturePassword), ArchivePath: archivePath, ArchivePassphrase: passphrase}, captureOps)
+	if err != nil || !validSplitCaptureManifest(manifest) {
+		t.Fatal("local encrypted split capture failed")
+	}
+	profileBytes := readEncryptedTestComponent(t, archivePath, manifest.Components[2], passphrase)
+	schemaSQL := readEncryptedTestComponent(t, archivePath, manifest.Components[0], passphrase)
+	dataSQL := readEncryptedTestComponent(t, archivePath, manifest.Components[1], passphrase)
+	profile, err := parseRecoveryProfileV2(profileBytes)
+	if err != nil || len(profile.TableFingerprints) != 3 {
+		t.Fatal("local archive lacks its archive-derived table fingerprints")
+	}
+	targetParams := fixture.params
+	targetParams.Database = "sparc_split_target"
+	targetParams.ExpectedProjectRef = targetRef
+	targetParams.Host = "aws-1-us-east-2.pooler.supabase.com"
+	targetParams.User = "postgres." + targetRef
+	restoreOps := defaultRecoveryOps()
+	restoreOps.observe = fixtureRecoveryObserver(t, fixture)
+	candidateRun := fixtureCandidateRunner(fixture)
+	restoreOps.run = candidateRun
+	request := RestoreRequest{
+		Target: targetParams, TargetPassword: []byte(fixturePassword), ArchivePath: archivePath, ArchivePassphrase: passphrase,
+		EmptyScope: EmptyTargetScopeV1{RequiredPresent: []string{"public"}},
+	}
+	if err := restoreSplitWith(ctx, request, restoreOps); err != nil {
+		t.Fatalf("locally verified split restore failed: %v", err)
+	}
+	rootCert, err := os.ReadFile(fixture.caPath)
+	if err != nil {
+		t.Fatal("unable to read local fixture CA")
+	}
+	wrongFingerprints := append([]RecoveryTableFingerprint(nil), profile.TableFingerprints...)
+	if wrongFingerprints[0].Fingerprint[0] == '0' {
+		wrongFingerprints[0].Fingerprint = "1" + wrongFingerprints[0].Fingerprint[1:]
+	} else {
+		wrongFingerprints[0].Fingerprint = "0" + wrongFingerprints[0].Fingerprint[1:]
+	}
+	mismatchConnection := &tools.PGConnection{Host: fixture.params.Host, Port: fixture.port, User: "postgres", Database: "sparc_split_mismatch", Password: []byte(fixturePassword), RootCertPEM: rootCert}
+	if err := restoreSchemaDataAndVerifyWith(ctx, candidateRun, mismatchConnection,
+		io.NopCloser(bytes.NewReader(schemaSQL)), io.NopCloser(bytes.NewReader(dataSQL)),
+		uint64(manifest.Components[0].Length), uint64(manifest.Components[1].Length), wrongFingerprints); err == nil {
+		t.Fatal("fingerprint mismatch unexpectedly committed")
+	}
+	var mismatchSchemaAbsent bool
+	var mismatchAuthRows, mismatchStorageRows int
+	var mismatchHistory string
+	if err := mismatchTarget.QueryRow(ctx, "SELECT to_regclass('public.sparc_split_items') IS NULL, (SELECT count(*) FROM auth.users), (SELECT count(*) FROM storage.objects), (SELECT version FROM auth.schema_migrations)").Scan(&mismatchSchemaAbsent, &mismatchAuthRows, &mismatchStorageRows, &mismatchHistory); err != nil || !mismatchSchemaAbsent || mismatchAuthRows != 0 || mismatchStorageRows != 0 || mismatchHistory != "target-history" {
+		t.Fatal("fingerprint mismatch did not roll back archive changes and preserve target history")
+	}
+	var publicValue, authEmail, storageName, authHistory, storageHistory string
+	if err := target.QueryRow(ctx, "SELECT value FROM public.sparc_split_items WHERE id=31").Scan(&publicValue); err != nil {
+		t.Fatal("archive-derived public row missing after restore")
+	}
+	if err := target.QueryRow(ctx, "SELECT email FROM auth.users WHERE id=17").Scan(&authEmail); err != nil {
+		t.Fatal("archive-derived Auth row missing after restore")
+	}
+	if err := target.QueryRow(ctx, "SELECT name FROM storage.objects WHERE id=23").Scan(&storageName); err != nil {
+		t.Fatal("archive-derived Storage row missing after restore")
+	}
+	if err := target.QueryRow(ctx, "SELECT version FROM auth.schema_migrations").Scan(&authHistory); err != nil {
+		t.Fatal("target Auth history missing after restore")
+	}
+	if err := target.QueryRow(ctx, "SELECT version FROM storage.migrations").Scan(&storageHistory); err != nil {
+		t.Fatal("target Storage history missing after restore")
+	}
+	if publicValue != "archive-public-row" || authEmail != "archive-user" || storageName != "archive-object" || authHistory != "target-history" || storageHistory != "target-storage-history" {
+		t.Fatal("restore rows or managed migration history differed from archive and baseline")
+	}
+}
+
 func TestSplitCaptureUsesPinnedSelectionsAndEncryptedProfile(t *testing.T) {
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		t.Skip("bundled recovery capture proof targets macOS arm64")
@@ -500,7 +662,7 @@ func TestSplitCaptureUsesPinnedSelectionsAndEncryptedProfile(t *testing.T) {
 	schemaSQL := readEncryptedTestComponent(t, filepath.Join(parent, "split"), manifest.Components[0], passphrase)
 	dataSQL := readEncryptedTestComponent(t, filepath.Join(parent, "split"), manifest.Components[1], passphrase)
 	profileBytes := readEncryptedTestComponent(t, filepath.Join(parent, "split"), manifest.Components[2], passphrase)
-	if !bytes.Contains(schemaSQL, []byte("CREATE TABLE public.sparc_public_items")) || bytes.Contains(schemaSQL, []byte("CREATE TABLE auth.users")) || bytes.Contains(schemaSQL, []byte("CREATE TABLE storage.objects")) {
+	if !bytes.Contains(schemaSQL, []byte("CREATE SCHEMA IF NOT EXISTS public;")) || bytes.Contains(schemaSQL, []byte("CREATE SCHEMA public;")) || !bytes.Contains(schemaSQL, []byte("CREATE TABLE public.sparc_public_items")) || bytes.Contains(schemaSQL, []byte("CREATE TABLE auth.users")) || bytes.Contains(schemaSQL, []byte("CREATE TABLE storage.objects")) {
 		t.Fatal("schema component did not follow the pinned public-only DDL selection")
 	}
 	for _, included := range [][]byte{[]byte("auth-eligible-canary"), []byte("storage-eligible-canary"), []byte("public-eligible-canary")} {
@@ -513,11 +675,25 @@ func TestSplitCaptureUsesPinnedSelectionsAndEncryptedProfile(t *testing.T) {
 			t.Fatal("data component included a fixed migration or vector exclusion")
 		}
 	}
-	var profile RecoveryProfileV1
-	if err := json.Unmarshal(profileBytes, &profile); err != nil || profile.CaptureStatus != "incomplete" || profile.Snapshot.Status != "unqualified" || profile.Roles.Status != "missing" {
-		t.Fatal("split archive lacks its versioned incomplete recovery profile")
+	profile, err := parseRecoveryProfileV2(profileBytes)
+	if err != nil || profile.SourceProjectRef != params.ExpectedProjectRef || profile.PublicSchemaOwner == "" || profile.CaptureStatus != "incomplete" || profile.Snapshot.Status != "unqualified" || profile.Roles.Status != "missing" || !sameRecoveryStrings(profile.SchemaDump.Transforms, []string{recoveryPublicSchemaTransform}) {
+		t.Fatal("split archive lacks its strict versioned incomplete recovery profile")
 	}
-	t.Log("PASS: split SQL streams are encrypted, Auth/Storage eligible rows are included, and fixed managed data exclusions plus incomplete scope are declared")
+	fingerprints := make(map[string]RecoveryTableFingerprint, len(profile.TableFingerprints))
+	for _, fingerprint := range profile.TableFingerprints {
+		fingerprints[fingerprint.Schema+"."+fingerprint.Name] = fingerprint
+	}
+	for _, name := range []string{"auth.users", "public.sparc_public_items", "storage.objects"} {
+		if fingerprints[name].Rows != 1 || fingerprints[name].Fingerprint == "" {
+			t.Fatalf("archive-derived table fingerprint missing for %s", name)
+		}
+	}
+	for _, name := range []string{"auth.schema_migrations", "storage.migrations", "storage.buckets_vectors", "storage.vector_indexes"} {
+		if _, exists := fingerprints[name]; exists {
+			t.Fatalf("excluded table unexpectedly has an archive fingerprint: %s", name)
+		}
+	}
+	t.Log("PASS: encrypted split profile contains archive-derived, order-independent table fingerprints for eligible data and none for fixed exclusions")
 }
 
 type failingSQLReader struct{ io.Reader }

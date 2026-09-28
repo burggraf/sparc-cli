@@ -575,6 +575,11 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 		case value := <-run.waitResult:
 			run.waited, run.waitDone = value, true
 			run.waitResult = nil
+			if request.Mode == ModeRestoreSQL && request.Input != nil && !run.inputDone && (value.err != nil || value.code != 0) {
+				// A failed transactional psql child may leave a gated input reader
+				// waiting for verification output that will never arrive.
+				_ = request.Input.Close()
+			}
 			// Drain stderr after a nonzero exit so the optional diagnostic sink
 			// gets the actual failure before finalize reports ErrRun.
 		case <-ctx.Done():
@@ -916,7 +921,7 @@ func runArguments(request RunRequest) ([]string, error) {
 		}
 		return append([]string{"--single-transaction", "--exit-on-error", "--data-only", "--schema=auth", "--table=" + request.RestoreTable}, common...), nil
 	case ModeRestoreSQL:
-		return append([]string{"-X", "--single-transaction", "--set=ON_ERROR_STOP=1"}, common...), nil
+		return append([]string{"-X", "-q", "-t", "--single-transaction", "--set=ON_ERROR_STOP=1"}, common...), nil
 	default:
 		return nil, ErrRun
 	}

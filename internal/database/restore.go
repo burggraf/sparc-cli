@@ -76,25 +76,45 @@ func restoreWith(ctx context.Context, request RestoreRequest, ops recoveryOps) e
 const restoreReplicationRole = "\nSET LOCAL session_replication_role = replica;\n"
 
 func restoreSchemaDataWith(ctx context.Context, run func(context.Context, tools.RunRequest) (tools.RunResult, error), connection *tools.PGConnection, schema, data io.ReadCloser, schemaLength, dataLength uint64) error {
+	return restoreSchemaDataAndVerifyWith(ctx, run, connection, schema, data, schemaLength, dataLength, nil)
+}
+
+func restoreSchemaDataAndVerifyWith(ctx context.Context, run func(context.Context, tools.RunRequest) (tools.RunResult, error), connection *tools.PGConnection, schema, data io.ReadCloser, schemaLength, dataLength uint64, fingerprints []RecoveryTableFingerprint) error {
 	maxBytes := uint64(archive.MaxComponentBytes)
 	prefixLength := uint64(len(restoreReplicationRole))
 	if ctx == nil || run == nil || connection == nil || schema == nil || data == nil || schemaLength == 0 || dataLength == 0 || schemaLength > maxBytes-prefixLength || dataLength > maxBytes-prefixLength-schemaLength {
 		_ = closeRestoreSQLInputs(schema, data)
 		return ErrRestore
 	}
-	input := &restoreSQLInput{
-		Reader: io.MultiReader(
-			&exactRestoreReader{source: schema, remaining: schemaLength},
-			strings.NewReader(restoreReplicationRole),
-			&exactRestoreReader{source: data, remaining: dataLength},
-		),
-		schema: schema, data: data,
+	verificationSQL := ""
+	var gate *restoreCommitGate
+	var stdout tools.OutputSink = discardToolOutput{}
+	stdoutLimit := uint64(maxToolStderrBytes)
+	if fingerprints != nil {
+		var err error
+		verificationSQL, err = buildFingerprintVerificationSQL(fingerprints)
+		if err != nil || uint64(len(verificationSQL)) > maxBytes-prefixLength-schemaLength-dataLength {
+			_ = closeRestoreSQLInputs(schema, data)
+			return ErrRestore
+		}
+		gate = newRestoreCommitGate()
+		stdout = newFingerprintVerificationSink(fingerprints, gate)
+		stdoutLimit = maxBytes
 	}
+	readers := []io.Reader{
+		&exactRestoreReader{source: schema, remaining: schemaLength},
+		strings.NewReader(restoreReplicationRole),
+		&exactRestoreReader{source: data, remaining: dataLength},
+	}
+	if fingerprints != nil {
+		readers = append(readers, strings.NewReader(verificationSQL), gate)
+	}
+	input := &restoreSQLInput{Reader: io.MultiReader(readers...), schema: schema, data: data, gate: gate}
 	result, err := run(ctx, tools.RunRequest{
 		Tool: tools.PSQL, Mode: tools.ModeRestoreSQL, Connection: connection,
-		Input: input, InputLimit: schemaLength + prefixLength + dataLength,
+		Input: input, InputLimit: schemaLength + prefixLength + dataLength + uint64(len(verificationSQL)),
 		Timeout: databaseToolTimeout, CleanupTimeout: 5 * time.Second,
-		StdoutLimit: maxToolStderrBytes, StderrLimit: maxToolStderrBytes, Stdout: discardToolOutput{},
+		StdoutLimit: stdoutLimit, StderrLimit: maxToolStderrBytes, Stdout: stdout,
 	})
 	closeErr := input.Close()
 	if err != nil || result.ExitCode != 0 || closeErr != nil {
@@ -106,12 +126,18 @@ func restoreSchemaDataWith(ctx context.Context, run func(context.Context, tools.
 type restoreSQLInput struct {
 	io.Reader
 	schema, data io.ReadCloser
+	gate         *restoreCommitGate
 	once         sync.Once
 	err          error
 }
 
 func (r *restoreSQLInput) Close() error {
-	r.once.Do(func() { r.err = closeRestoreSQLInputs(r.schema, r.data) })
+	r.once.Do(func() {
+		if r.gate != nil {
+			r.gate.cancel()
+		}
+		r.err = closeRestoreSQLInputs(r.schema, r.data)
+	})
 	return r.err
 }
 
@@ -173,7 +199,14 @@ func (r *exactRestoreReader) Read(buffer []byte) (int, error) {
 }
 
 func openDatabaseDump(dir string, component archive.Component, passphrase string) (io.ReadCloser, error) {
-	if component.ID != "00000000" || component.Length <= 0 || component.Length > archive.MaxComponentBytes {
+	if component.ID != "00000000" {
+		return nil, ErrRestore
+	}
+	return openArchiveComponent(dir, component, passphrase)
+}
+
+func openArchiveComponent(dir string, component archive.Component, passphrase string) (io.ReadCloser, error) {
+	if !validArchiveComponentID(component.ID) || component.Length <= 0 || component.Length > archive.MaxComponentBytes {
 		return nil, ErrRestore
 	}
 	path := filepath.Join(dir, component.ID+".age")
@@ -192,17 +225,31 @@ func openDatabaseDump(dir string, component archive.Component, passphrase string
 		_ = ciphertext.Close()
 		return nil, ErrRestore
 	}
-	return &databaseDumpReader{Reader: plain, file: ciphertext}, nil
+	return &archiveComponentReader{Reader: plain, file: ciphertext}, nil
 }
 
-type databaseDumpReader struct {
+func validArchiveComponentID(id string) bool {
+	if len(id) != 8 {
+		return false
+	}
+	for _, char := range id {
+		if char < '0' || char > '9' {
+			if char < 'a' || char > 'f' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+type archiveComponentReader struct {
 	io.Reader
 	file *os.File
 	once sync.Once
 	err  error
 }
 
-func (r *databaseDumpReader) Close() error {
+func (r *archiveComponentReader) Close() error {
 	r.once.Do(func() { r.err = r.file.Close() })
 	return r.err
 }

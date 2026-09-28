@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -161,7 +162,7 @@ func TestCaptureSplitPublishesTwoEncryptedSQLComponentsAndProfile(t *testing.T) 
 	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
 		return CatalogObservation{
 			ServerVersionNum: 170009, ServerMajor: 17, TLS: true, ReadOnly: true,
-			Schemas:    []SchemaObservation{{Name: "public", Present: true}, {Name: "auth", Present: true}, {Name: "storage", Present: true}},
+			Schemas:    []SchemaObservation{{Name: "public", Present: true, Owner: "postgres"}, {Name: "auth", Present: true}, {Name: "storage", Present: true}},
 			Extensions: []ExtensionObservation{{Name: "postgis", Version: "3.5.2", Schema: "extensions"}},
 		}, nil
 	}
@@ -177,7 +178,7 @@ func TestCaptureSplitPublishesTwoEncryptedSQLComponentsAndProfile(t *testing.T) 
 			if !equalStrings(request.DumpSchemas, []string{"public"}) || len(request.ExcludedTables) != 0 {
 				t.Fatalf("schema dump selection = %#v %#v", request.DumpSchemas, request.ExcludedTables)
 			}
-			payload = "CREATE TABLE public.synthetic_items (id integer);\n"
+			payload = "CREATE SCHEMA public;\nCREATE TABLE public.synthetic_items (id integer);\n"
 		case tools.ModeDumpData:
 			if !equalStrings(request.DumpSchemas, []string{"public", "auth", "storage"}) || !hasRequiredRecoveryExclusions(request.ExcludedTables) {
 				t.Fatalf("data dump selection = %#v %#v", request.DumpSchemas, request.ExcludedTables)
@@ -209,18 +210,179 @@ func TestCaptureSplitPublishesTwoEncryptedSQLComponentsAndProfile(t *testing.T) 
 	for index, component := range manifest.Components {
 		components[index] = readEncryptedTestComponent(t, request.ArchivePath, component, request.ArchivePassphrase)
 	}
-	if string(components[0]) != "CREATE TABLE public.synthetic_items (id integer);\n" || !strings.Contains(string(components[1]), "COPY auth.users") {
-		t.Fatalf("split SQL components = %q / %q", components[0], components[1])
+	if string(components[0]) != "CREATE SCHEMA IF NOT EXISTS public;\nCREATE TABLE public.synthetic_items (id integer);\n" || !strings.Contains(string(components[1]), "COPY auth.users") {
+		t.Fatal("split SQL components did not match the fixed profile")
 	}
-	var profile RecoveryProfileV1
+	var profile RecoveryProfileV2
 	if err := json.Unmarshal(components[2], &profile); err != nil {
 		t.Fatalf("recovery profile is not JSON: %v", err)
 	}
-	if profile.Format != recoveryProfileFormat || profile.Version != 1 || profile.CaptureStatus != "incomplete" || profile.SourcePostgresMajor != 17 || profile.SourceVersionNum != 170009 || profile.ClientVersion != "PostgreSQL 17.11" || profile.SchemaDump.Key != "database/schema.sql" || profile.DataDump.Key != "database/data.sql" || len(profile.Unknowns) == 0 || len(profile.Extensions) != 1 {
+	if profile.Format != recoveryProfileFormat || profile.Version != recoveryProfileVersion || profile.CaptureStatus != "incomplete" || profile.SourceProjectRef != "abcdefghijklmnopqrst" || profile.SourcePostgresMajor != 17 || profile.SourceVersionNum != 170009 || profile.ClientVersion != "PostgreSQL 17.11" || profile.PublicSchemaOwner != "postgres" || profile.SchemaDump.Key != "database/schema.sql" || profile.DataDump.Key != "database/data.sql" || !equalStrings(profile.SchemaDump.Transforms, []string{recoveryPublicSchemaTransform}) || len(profile.Unknowns) == 0 || len(profile.Extensions) != 1 {
 		t.Fatalf("recovery profile = %#v", profile)
 	}
-	if strings.Contains(string(components[2]), "synthetic-db-password") || strings.Contains(string(components[2]), "synthetic-root") || strings.Contains(string(components[2]), "abcdefghijklmnopqrst") {
-		t.Fatal("recovery profile disclosed source credentials or project identity")
+	if strings.Contains(string(components[2]), "synthetic-db-password") || strings.Contains(string(components[2]), "synthetic-root") {
+		t.Fatal("recovery profile disclosed source credentials")
+	}
+}
+
+func TestCopyDataFingerprintsAreOrderIndependentAndContentSensitive(t *testing.T) {
+	first := "COPY public.items (id, value) FROM stdin;\n1\talpha\n2\tbeta\\nline\n\\.\n"
+	second := "COPY public.items (id, value) FROM stdin;\n2\tbeta\\nline\n1\talpha\n\\.\n"
+	changed := "COPY public.items (id, value) FROM stdin;\n1\talpha\n2\tchanged\n\\.\n"
+	parse := func(data string) []RecoveryTableFingerprint {
+		t.Helper()
+		fingerprints, err := parseCopyDataFingerprints(strings.NewReader(data))
+		if err != nil || len(fingerprints) != 1 {
+			t.Fatalf("COPY fingerprint parse = %#v, %v", fingerprints, err)
+		}
+		return fingerprints
+	}
+	one, two, three := parse(first)[0], parse(second)[0], parse(changed)[0]
+	if one.Rows != 2 || one.Fingerprint != two.Fingerprint || one.Fingerprint == three.Fingerprint || !equalStrings(one.Columns, []string{"id", "value"}) {
+		t.Fatalf("COPY fingerprints = %#v / %#v / %#v", one, two, three)
+	}
+}
+
+func TestCopyDataFingerprintsRefuseUnknownOrTruncatedStreams(t *testing.T) {
+	for _, input := range []string{
+		"COPY public.items (id) FROM stdin;\n1\n",
+		"COPY cron.job (id) FROM stdin;\n1\n\\.\n",
+		"COPY public.items FROM PROGRAM 'unsafe';\n",
+	} {
+		if _, err := parseCopyDataFingerprints(strings.NewReader(input)); err != ErrRecoveryData {
+			t.Fatalf("unqualified COPY input error = %v", err)
+		}
+	}
+}
+
+func TestFingerprintVerificationSinkRequiresMatchingRowsBeforeCommit(t *testing.T) {
+	fingerprints, err := parseCopyDataFingerprints(strings.NewReader("COPY public.items (id, value) FROM stdin;\n1\talpha\n2\tbeta\n\\.\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validOutput := "\n  \nSPARC_VERIFY_BEGIN 0\n1\talpha\n2\tbeta\nSPARC_VERIFY_END 0\nSPARC_VERIFY_DONE\n"
+	gate := newRestoreCommitGate()
+	if n, err := gate.Read(nil); n != 0 || err != nil {
+		t.Fatalf("empty gate read = %d, %v", n, err)
+	}
+	sink := newFingerprintVerificationSink(fingerprints, gate)
+	if _, err := sink.WriteContext(context.Background(), []byte(validOutput)); err != nil || sink.CloseContext(context.Background()) != nil {
+		t.Fatalf("valid archive-derived verification rejected: %v", err)
+	}
+	if _, err := gate.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("verified transaction gate = %v", err)
+	}
+
+	gate = newRestoreCommitGate()
+	sink = newFingerprintVerificationSink(fingerprints, gate)
+	if _, err := sink.WriteContext(context.Background(), []byte(strings.Replace(validOutput, "2\tbeta", "2\tchanged", 1))); err != ErrRecoveryMismatch {
+		t.Fatalf("changed archive-derived row error = %v", err)
+	}
+	select {
+	case err := <-gate.ready:
+		if err != ErrRestore {
+			t.Fatalf("mismatch gate result = %v, want cancellation", err)
+		}
+	default:
+		t.Fatal("mismatched archive data did not cancel the transaction input gate")
+	}
+}
+
+func TestFingerprintVerificationAcceptsEmptyRowsAfterTheirMarker(t *testing.T) {
+	fingerprints, err := parseCopyDataFingerprints(strings.NewReader("COPY public.items (value) FROM stdin;\n\n\\.\n"))
+	if err != nil || len(fingerprints) != 1 {
+		t.Fatalf("empty COPY row fingerprint = %#v, %v", fingerprints, err)
+	}
+	gate := newRestoreCommitGate()
+	sink := newFingerprintVerificationSink(fingerprints, gate)
+	output := "\nSPARC_VERIFY_BEGIN 0\n\nSPARC_VERIFY_END 0\nSPARC_VERIFY_DONE\n"
+	if _, err := sink.WriteContext(context.Background(), []byte(output)); err != nil || sink.CloseContext(context.Background()) != nil {
+		t.Fatalf("empty archive row rejected: %v", err)
+	}
+}
+
+func TestPublicSchemaTransformOnlyRewritesTopLevelStatement(t *testing.T) {
+	input := "CREATE FUNCTION public.literal() RETURNS text LANGUAGE sql AS $body$\nCREATE SCHEMA public;\n$body$;\nCREATE SCHEMA public;\n"
+	want := "CREATE FUNCTION public.literal() RETURNS text LANGUAGE sql AS $body$\nCREATE SCHEMA public;\n$body$;\nCREATE SCHEMA IF NOT EXISTS public;\n"
+	destination := &recoveryTestSink{}
+	sink := newPublicSchemaTransformSink(destination)
+	for offset := 0; offset < len(input); {
+		end := offset + 7
+		if end > len(input) {
+			end = len(input)
+		}
+		if _, err := sink.WriteContext(context.Background(), []byte(input[offset:end])); err != nil {
+			t.Fatalf("schema transform write failed: %v", err)
+		}
+		offset = end
+	}
+	if err := sink.CloseContext(context.Background()); err != nil || destination.String() != want {
+		t.Fatalf("schema transform failed or did not preserve SQL: %v", err)
+	}
+}
+
+func TestPublicSchemaTransformFailsClosedWhenStatementIsMissing(t *testing.T) {
+	destination := &recoveryTestSink{}
+	sink := newPublicSchemaTransformSink(destination)
+	if _, err := sink.WriteContext(context.Background(), []byte("CREATE TABLE public.items (id integer);\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.CloseContext(context.Background()); err != tools.ErrOutput || !destination.aborted {
+		t.Fatalf("missing public schema transform = %v, aborted=%t", err, destination.aborted)
+	}
+}
+
+func TestPublicSchemaTransformRejectsUnterminatedSQL(t *testing.T) {
+	destination := &recoveryTestSink{}
+	sink := newPublicSchemaTransformSink(destination)
+	if _, err := sink.WriteContext(context.Background(), []byte("CREATE SCHEMA public;\nSELECT $body$\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.CloseContext(context.Background()); err != tools.ErrOutput || !destination.aborted {
+		t.Fatalf("unterminated schema SQL = %v, aborted=%t", err, destination.aborted)
+	}
+}
+
+func TestFingerprintVerificationSQLQuotesIdentifiers(t *testing.T) {
+	fingerprints := []RecoveryTableFingerprint{{Schema: "public", Name: "odd table", Columns: []string{`a"b`}, Rows: 0, Fingerprint: strings.Repeat("0", 64)}}
+	script, err := buildFingerprintVerificationSQL(fingerprints)
+	if err != nil || !strings.Contains(script, `COPY (SELECT "a""b" FROM ONLY "public"."odd table") TO STDOUT;`) {
+		t.Fatalf("verification SQL did not quote identifiers: %v", err)
+	}
+}
+
+func TestParseRecoveryProfileV2FailsClosed(t *testing.T) {
+	observation := CatalogObservation{ServerMajor: 17, ServerVersionNum: 170009, Schemas: []SchemaObservation{{Name: "public", Present: true, Owner: "postgres"}}}
+	profile := makeRecoveryProfile(observation, "abcdefghijklmnopqrst")
+	encoded, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseRecoveryProfileV2(encoded)
+	if err != nil || parsed.SourceProjectRef != "abcdefghijklmnopqrst" || parsed.CaptureStatus != "incomplete" {
+		t.Fatalf("valid profile parse = %#v, %v", parsed, err)
+	}
+	withoutUnknowns := profile
+	withoutUnknowns.Unknowns = nil
+	missingUnknowns, err := json.Marshal(withoutUnknowns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutations := map[string][]byte{
+		"unknown field":         append(append([]byte(nil), encoded[:len(encoded)-1]...), []byte(`,"future":true}`)...),
+		"duplicate field":       append(append([]byte(nil), encoded[:len(encoded)-1]...), []byte(`,"version":1}`)...),
+		"unknown version":       bytes.Replace(encoded, []byte(`"version":2`), []byte(`"version":3`), 1),
+		"older profile version": bytes.Replace(encoded, []byte(`"version":2`), []byte(`"version":1`), 1),
+		"missing unknown":       missingUnknowns,
+		"invalid schema owner":  bytes.Replace(encoded, []byte(`"public_schema_owner":"postgres"`), []byte(`"public_schema_owner":""`), 1),
+		"complete declaration":  bytes.Replace(encoded, []byte(`"capture_status":"incomplete"`), []byte(`"capture_status":"complete"`), 1),
+	}
+	for name, malformed := range mutations {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseRecoveryProfileV2(malformed); err != ErrRecoveryProfile {
+				t.Fatalf("malformed profile error = %v", err)
+			}
+		})
 	}
 }
 
@@ -257,13 +419,13 @@ func TestCaptureSplitDataFailureLeavesNoPublishedArchive(t *testing.T) {
 	ops := recoveryTestOps()
 	ops.create = destination.Create
 	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
-		return CatalogObservation{ServerVersionNum: 170009, ServerMajor: 17, TLS: true, ReadOnly: true, Schemas: []SchemaObservation{{Name: "public", Present: true}, {Name: "auth", Present: true}, {Name: "storage", Present: true}}}, nil
+		return CatalogObservation{ServerVersionNum: 170009, ServerMajor: 17, TLS: true, ReadOnly: true, Schemas: []SchemaObservation{{Name: "public", Present: true, Owner: "postgres"}, {Name: "auth", Present: true, Owner: "postgres"}, {Name: "storage", Present: true, Owner: "postgres"}}}, nil
 	}
 	calls := 0
 	ops.run = func(ctx context.Context, request tools.RunRequest) (tools.RunResult, error) {
 		calls++
 		if request.Mode == tools.ModeDumpSchema {
-			_, _ = request.Stdout.WriteContext(ctx, []byte("CREATE TABLE public.synthetic_items (id integer);\n"))
+			_, _ = request.Stdout.WriteContext(ctx, []byte("CREATE SCHEMA public;\nCREATE TABLE public.synthetic_items (id integer);\n"))
 			_ = request.Stdout.CloseContext(ctx)
 			return tools.RunResult{ExitCode: 0}, nil
 		}
@@ -405,6 +567,88 @@ func TestCaptureFailedDumpLeavesNoPublishedArchive(t *testing.T) {
 	entries, err := os.ReadDir(parent)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("failed dump left staging files: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestRestoreSplitRejectsLegacyArchiveBeforeTargetContact(t *testing.T) {
+	request := restoreTestRequest(t)
+	request.EmptyScope = EmptyTargetScopeV1{RequiredPresent: []string{"public"}}
+	ops := recoveryTestOps()
+	observed := false
+	ops.verify = func(string, string) (archive.Manifest, error) { return testDatabaseDumpManifest([]byte("legacy")), nil }
+	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
+		observed = true
+		return CatalogObservation{}, nil
+	}
+	if err := restoreSplitWith(context.Background(), request, ops); err != ErrRestore || observed {
+		t.Fatalf("legacy split-restore refusal = %v, target observed=%t", err, observed)
+	}
+}
+
+func TestRestoreSplitRefusesSameSourceProjectBeforeTargetContact(t *testing.T) {
+	request := restoreTestRequest(t)
+	request.EmptyScope = EmptyTargetScopeV1{RequiredPresent: []string{"public"}}
+	request.Target.ExpectedProjectRef = "abcdefghijklmnopqrst"
+	profile, err := json.Marshal(makeRecoveryProfile(CatalogObservation{ServerMajor: 17, ServerVersionNum: 170009, Schemas: []SchemaObservation{{Name: "public", Present: true, Owner: "postgres"}}}, request.Target.ExpectedProjectRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := splitRecoveryManifestForTest(profile)
+	ops := recoveryTestOps()
+	ops.verify = func(string, string) (archive.Manifest, error) { return manifest, nil }
+	ops.open = func(_ string, component archive.Component, _ string) (io.ReadCloser, error) {
+		if component.Key == recoveryProfileKey {
+			return io.NopCloser(bytes.NewReader(profile)), nil
+		}
+		return io.NopCloser(strings.NewReader(strings.Repeat("x", int(component.Length)))), nil
+	}
+	observed, rooted := false, false
+	ops.rootCert = func(ConnectionParams) ([]byte, error) { rooted = true; return []byte("root"), nil }
+	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
+		observed = true
+		return CatalogObservation{}, nil
+	}
+	if err := restoreSplitWith(context.Background(), request, ops); err != ErrRestore || observed || rooted {
+		t.Fatalf("same-source refusal = %v, target observed=%t root loaded=%t", err, observed, rooted)
+	}
+}
+
+func TestRestoreSplitRefusesVersion1ProfileBeforeTargetContact(t *testing.T) {
+	request := restoreTestRequest(t)
+	request.EmptyScope = EmptyTargetScopeV1{RequiredPresent: []string{"public"}}
+	profile := makeRecoveryProfile(CatalogObservation{ServerMajor: 17, ServerVersionNum: 170009, Schemas: []SchemaObservation{{Name: "public", Present: true, Owner: "postgres"}}}, "zyxwvutsrqponmlkjihg")
+	profile.Version = 1
+	profileBytes, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := splitRecoveryManifestForTest(profileBytes)
+	ops := recoveryTestOps()
+	ops.verify = func(string, string) (archive.Manifest, error) { return manifest, nil }
+	ops.open = func(_ string, component archive.Component, _ string) (io.ReadCloser, error) {
+		if component.Key == recoveryProfileKey {
+			return io.NopCloser(bytes.NewReader(profileBytes)), nil
+		}
+		return io.NopCloser(strings.NewReader(strings.Repeat("x", int(component.Length)))), nil
+	}
+	observed := false
+	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
+		observed = true
+		return CatalogObservation{}, nil
+	}
+	if err := restoreSplitWith(context.Background(), request, ops); err != ErrRestore || observed {
+		t.Fatalf("version-1 split profile refusal = %v, target observed=%t", err, observed)
+	}
+}
+
+func TestSplitTargetRequiresCapturedPublicSchemaOwner(t *testing.T) {
+	schemas := []SchemaObservation{{Name: "public", Present: true, Owner: "postgres"}, {Name: "auth", Present: true}, {Name: "storage", Present: true}}
+	if !splitTargetSchemasPresent(schemas, "postgres") || splitTargetSchemasPresent(schemas, "different_owner") {
+		t.Fatal("split target schema-owner check accepted an incompatible baseline")
+	}
+	schemas[1].Present = false
+	if splitTargetSchemasPresent(schemas, "postgres") {
+		t.Fatal("split target schema check accepted a missing managed schema")
 	}
 }
 
@@ -558,6 +802,23 @@ type recoveryTestInput struct {
 
 func (r *recoveryTestInput) Close() error { r.closed = true; return nil }
 
+type recoveryTestSink struct {
+	bytes.Buffer
+	aborted bool
+}
+
+func (s *recoveryTestSink) WriteContext(ctx context.Context, data []byte) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return s.Write(data)
+}
+func (*recoveryTestSink) CloseContext(context.Context) error { return nil }
+func (s *recoveryTestSink) AbortContext(context.Context) error {
+	s.aborted = true
+	return nil
+}
+
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false
@@ -674,6 +935,26 @@ func emptyRecoveryObservation() CatalogObservation {
 		Schemas:  []SchemaObservation{{Name: "public", Present: true}, {Name: "sparc_app", Present: false}},
 		Security: SecurityObservation{Observed: true},
 	}
+}
+
+func splitRecoveryManifestForTest(profile []byte) archive.Manifest {
+	components := []struct {
+		key, scope, status string
+		data               []byte
+	}{
+		{schemaSQLKey, schemaSQLScope, "incomplete", []byte("CREATE TABLE public.items (id integer);\n")},
+		{dataSQLKey, dataSQLScope, "incomplete", []byte("COPY public.items (id) FROM stdin;\n1\n\\.\n")},
+		{recoveryProfileKey, recoveryProfileScope, "complete", profile},
+	}
+	manifest := archive.Manifest{Format: archive.Format, Version: archive.Version}
+	for index, component := range components {
+		digest := sha256.Sum256(component.data)
+		manifest.Components = append(manifest.Components, archive.Component{
+			ID: fmt.Sprintf("%08x", index), Key: component.key, Scope: component.scope, Status: component.status,
+			Length: int64(len(component.data)), SHA256: hex.EncodeToString(digest[:]),
+		})
+	}
+	return manifest
 }
 
 func testDatabaseDumpManifest(data []byte) archive.Manifest {
