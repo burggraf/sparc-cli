@@ -62,6 +62,9 @@ func TestSummarizeArchiveTOCWithoutIdentifiers(t *testing.T) {
 }
 
 func TestCountArchiveTOCEntries(t *testing.T) {
+	if count, err := countArchiveTOCEntries([]byte("; empty filtered TOC\n")); err != nil || count != 0 {
+		t.Fatalf("empty filtered TOC count = %d, %v; want 0, nil", count, err)
+	}
 	count, err := countArchiveTOCEntries([]byte("; header\n1; 0 1 TABLE DATA public items owner\n2; 0 2 TABLE auth users owner\n"))
 	if err != nil || count != 2 {
 		t.Fatalf("TOC entry count = %d, %v", count, err)

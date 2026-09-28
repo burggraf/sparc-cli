@@ -6,18 +6,22 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/burggraf/sparc-cli/internal/archive"
 	"github.com/burggraf/sparc-cli/internal/platform"
 )
 
 // TOCSummary reports only counts, never SQL, names or role identifiers.
-// Schema counts come from pg_restore's native TOC schema filters.
+// Schema counts come from pg_restore filters; selection counts come from the
+// conservative offline TOC classifier and are not restore-qualification evidence.
 type TOCSummary struct {
-	Total, Auth, Public, Storage, Extension int
+	Total, Auth, Public, Storage, Extension    int
+	SelectedSchema, SelectedData, ExcludedData int
+	ManagedDDL, Unsupported, Unknown           int
+	SelectionBlocked                           bool
 }
 
 const maxTOCBytes = 8 << 20
@@ -50,11 +54,13 @@ func InspectArchiveTOC(ctx context.Context, binDir, archivePath string, passphra
 	if err != nil {
 		return TOCSummary{}, err
 	}
-	summary, err := summarizeArchiveTOC(output)
+	selection, err := selectArchiveTOC(output)
 	clear(output)
 	if err != nil {
 		return TOCSummary{}, err
 	}
+	summary := selection.summary
+	summary.SelectionBlocked = selection.Blocked()
 	for _, schema := range []string{"auth", "public", "storage"} {
 		filtered, err := runArchiveTOC(ctx, tools.pgrestore, env, archivePath, passphrase, "--list", "--schema", schema)
 		if err != nil {
@@ -98,48 +104,36 @@ func runArchiveTOC(ctx context.Context, pgrestore string, env []string, archiveP
 }
 
 func summarizeArchiveTOC(data []byte) (TOCSummary, error) {
-	var result TOCSummary
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, ";") {
-			continue
-		}
-		id, fields, ok := strings.Cut(line, ";")
-		if !ok || strings.TrimSpace(id) == "" {
-			return TOCSummary{}, ErrArchive
-		}
-		if _, err := strconv.ParseUint(strings.TrimSpace(id), 10, 32); err != nil {
-			return TOCSummary{}, ErrArchive
-		}
-		parts := strings.Fields(fields)
-		if len(parts) < 4 {
-			return TOCSummary{}, ErrArchive
-		}
-		result.Total++
-		if len(parts) >= 3 && parts[2] == "EXTENSION" {
-			result.Extension++
-		}
+	selection, err := selectArchiveTOC(data)
+	if err != nil {
+		return TOCSummary{}, err
 	}
-	if result.Total == 0 {
-		return TOCSummary{}, ErrArchive
-	}
-	return result, nil
+	selection.summary.SelectionBlocked = selection.Blocked()
+	return selection.summary, nil
 }
 
 func countArchiveTOCEntries(data []byte) (int, error) {
+	if len(data) > maxTOCBytes || !utf8.Valid(data) {
+		return 0, ErrArchive
+	}
 	count := 0
+	seen := make(map[uint32]struct{})
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, ";") {
 			continue
 		}
-		id, _, ok := strings.Cut(line, ";")
-		if !ok {
+		if count >= maxTOCEntries {
 			return 0, ErrArchive
 		}
-		if _, err := strconv.ParseUint(strings.TrimSpace(id), 10, 32); err != nil {
+		entry, _, err := parseTOCEntry(line)
+		if err != nil {
 			return 0, ErrArchive
 		}
+		if _, duplicate := seen[entry.id]; duplicate {
+			return 0, ErrArchive
+		}
+		seen[entry.id] = struct{}{}
 		count++
 	}
 	return count, nil
