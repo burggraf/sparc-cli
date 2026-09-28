@@ -2,7 +2,7 @@
 
 SPARC (Supabase Project ARChiver) is a Go CLI for encrypted Supabase database backups. Full-project recovery is not yet supported.
 
-> **Current usable slice:** On macOS arm64, `sparc backup` creates an encrypted local PostgreSQL database archive using its bundled PostgreSQL 17.11 client; no separate PostgreSQL or OpenSSL installation is needed. The archive is deliberately marked incomplete: it excludes Auth, Storage, Functions, Vault, project configuration, cluster roles/globals, and provider-managed services. `restore` remains unavailable, and other platform payloads are not yet bundled.
+> **Current usable slice:** On macOS arm64, `sparc backup` creates an encrypted local PostgreSQL database archive using its bundled PostgreSQL 17.11 client; no separate PostgreSQL or OpenSSL installation is needed. The archive is deliberately marked incomplete. It is a full single-database `pg_dump`, so some database objects in Supabase-managed schemas may be present; their recovery is not qualified. It does not include Storage object bytes, project-level settings, cluster roles/globals, or other provider-managed services. `restore` remains unavailable, and other platform payloads are not yet bundled.
 
 ## Commands
 

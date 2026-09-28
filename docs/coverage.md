@@ -121,8 +121,11 @@ from a qualified Supavisor session-pooler route on macOS arm64. PostgreSQL
 and privately extracted/validated by SPARC; no separately installed PostgreSQL
 client is required. The component is always marked `incomplete`: the inventory
 table above remains the support contract.
-The command does not claim capture of Auth, Storage, Functions, Vault,
-configuration, roles/globals, or managed-provider services; it has no remote
-destination or restore command. Other platform client payloads are not bundled.
+The dump is a full single-database `pg_dump`, so it may contain database objects
+from Supabase-managed schemas such as `auth` and `storage`; their completeness and
+recovery are not qualified. It does not capture Storage object bytes, project-level
+configuration, cluster roles/globals, Functions, or other provider-managed
+services. It has no remote destination or restore command. Other platform client
+payloads are not bundled.
 A successful command is therefore exit `3`
 (intact archive with incomplete declared coverage), not full-project success.
