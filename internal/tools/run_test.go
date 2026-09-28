@@ -26,6 +26,37 @@ var preparedRunFixture struct {
 	packagePath, cacheRoot, tempRoot string
 }
 
+func TestRunOptionalStderrCaptureOnFailure(t *testing.T) {
+	manifest, packagePath, cacheRoot := preparedRunPayload(t)
+	var diagnostic bytes.Buffer
+	request := validRunRequestForTest(&memorySink{})
+	request.Stderr = &diagnostic
+	ops := runTestOps(func(spec platform.ProcessSpec) (ownedProcess, error) {
+		_, _ = spec.Stderr.Write([]byte("object already exists\n"))
+		return completedProcess(1), nil
+	})
+	if _, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops); err != ErrRun || diagnostic.String() != "object already exists\n" {
+		t.Fatalf("run error=%v, captured=%q", err, diagnostic.String())
+	}
+}
+
+func TestRunDrainsStderrWhenRestoreInputFails(t *testing.T) {
+	manifest, packagePath, cacheRoot := preparedRunPayload(t)
+	var diagnostic bytes.Buffer
+	request := connectedRunRequestForTest(&memorySink{})
+	request.Tool, request.Mode = PGRestore, ModeRestore
+	request.Input = io.NopCloser(failingRunReader{})
+	request.InputLimit = 100
+	request.Stderr = &diagnostic
+	ops := runTestOps(func(spec platform.ProcessSpec) (ownedProcess, error) {
+		_, _ = spec.Stderr.Write([]byte("pg_restore: error: schema auth already exists\n"))
+		return completedProcess(1), nil
+	})
+	if _, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops); err != ErrRun || diagnostic.String() != "pg_restore: error: schema auth already exists\n" {
+		t.Fatalf("restore error=%v, captured=%q", err, diagnostic.String())
+	}
+}
+
 func TestRunUsesOnlyTypedVersionAndIsolatedProcessSpec(t *testing.T) {
 	manifest, packagePath, cacheRoot := preparedRunPayload(t)
 	t.Setenv("PATH", "secret-path")

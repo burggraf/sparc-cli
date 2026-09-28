@@ -15,6 +15,7 @@ import (
 
 	"github.com/burggraf/sparc-cli/internal/credentials"
 	"github.com/burggraf/sparc-cli/internal/database"
+	"golang.org/x/term"
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
@@ -23,15 +24,23 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sparc-hostedtry", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var archivePath, targetFile, projectRef, passphraseFile string
-	var confirmed bool
+	var confirmed, showPostgresError bool
 	flags.StringVar(&archivePath, "archive", "", "existing encrypted archive")
 	flags.StringVar(&targetFile, "target-file", "", "file containing the target session-pooler URL")
 	flags.StringVar(&projectRef, "project-ref", "", "exact target Supabase project ref")
 	flags.StringVar(&passphraseFile, "passphrase-file", "", "file containing archive passphrase (omit to prompt)")
 	flags.BoolVar(&confirmed, "confirm-disposable-target", false, "authorize a hosted write to the disposable target")
+	flags.BoolVar(&showPostgresError, "show-postgres-error", false, "show up to 64 KiB of raw PostgreSQL error on the local terminal (may contain sensitive SQL)")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || archivePath == "" || targetFile == "" || projectRef == "" || !confirmed {
 		fmt.Fprintln(stderr, "sparc-hostedtry: --archive, --target-file, --project-ref and --confirm-disposable-target are required")
 		return 2
+	}
+	if showPostgresError {
+		file, ok := stderr.(*os.File)
+		if !ok || !term.IsTerminal(int(file.Fd())) {
+			fmt.Fprintln(stderr, "sparc-hostedtry: raw PostgreSQL diagnostics require terminal stderr")
+			return 2
+		}
 	}
 	var err error
 	archivePath, err = filepath.Abs(archivePath)
@@ -75,11 +84,20 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	defer stop()
 	// The existing restore verifies the encrypted archive before connecting,
 	// checks that public is empty, then runs pg_restore -1 --exit-on-error.
-	if database.Restore(ctx, database.RestoreRequest{
+	var localOutput io.Writer
+	if showPostgresError {
+		localOutput = stderr
+	}
+	stage, category, trialErr := database.RestoreTrial(ctx, database.RestoreRequest{
 		Target: target, TargetPassword: password, ArchivePath: archivePath, ArchivePassphrase: string(passphrase),
 		EmptyScope: database.EmptyTargetScopeV1{RequiredPresent: []string{"public"}},
-	}) != nil {
-		fmt.Fprintln(stderr, "sparc-hostedtry: restore did not succeed (archive validation, target preflight, or PostgreSQL rejected it); do not claim recovery. No automatic retry or cleanup was performed")
+	}, localOutput)
+	if trialErr != nil {
+		if category == "" {
+			fmt.Fprintf(stderr, "sparc-hostedtry: restore failed at %s; no recovery claimed. No automatic retry or cleanup was performed\n", stage)
+		} else {
+			fmt.Fprintf(stderr, "sparc-hostedtry: restore failed at %s (%s); no recovery claimed. No automatic retry or cleanup was performed\n", stage, category)
+		}
 		return 1
 	}
 	if _, err := io.WriteString(stdout, "PostgreSQL accepted the complete dump in one transaction. Source fidelity and full Supabase project recovery are NOT proven.\n"); err != nil {

@@ -74,6 +74,9 @@ type RunRequest struct {
 	Timeout, CleanupTimeout  time.Duration
 	StdoutLimit, StderrLimit uint64
 	Stdout                   OutputSink
+	// Stderr receives bounded raw child diagnostics, if explicitly requested.
+	// It may contain SQL or identifiers; callers must keep it local and private.
+	Stderr io.Writer
 }
 
 // RunResult is populated only on success, after the process waiter and both
@@ -493,7 +496,11 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 	}()
 	go func() {
 		defer run.workers.Done()
-		run.stderrResult <- pumpDiscard(ctx, stderrRead.file, request.StderrLimit)
+		if request.Stderr != nil {
+			run.stderrResult <- pumpStderr(ctx, stderrRead.file, request.Stderr, request.StderrLimit)
+		} else {
+			run.stderrResult <- pumpDiscard(ctx, stderrRead.file, request.StderrLimit)
+		}
 	}()
 
 	for !run.inputDone || !run.stdoutDone || !run.stderrDone || !run.waitDone {
@@ -501,9 +508,8 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 		case value := <-run.inputResult:
 			run.input, run.inputDone = value, true
 			run.inputResult = nil
-			if value.err != nil {
-				return RunResult{}, value.err
-			}
+			// A child may reject the first SQL statement and close stdin while
+			// writing its error to stderr. Let the output pumps drain first.
 		case value := <-run.stdoutResult:
 			run.stdout, run.stdoutDone = value, true
 			run.stdoutResult = nil
@@ -519,9 +525,8 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 		case value := <-run.waitResult:
 			run.waited, run.waitDone = value, true
 			run.waitResult = nil
-			if value.err != nil || value.code != 0 {
-				return RunResult{}, ErrRun
-			}
+			// Drain stderr after a nonzero exit so the optional diagnostic sink
+			// gets the actual failure before finalize reports ErrRun.
 		case <-ctx.Done():
 			return RunResult{}, ErrRun
 		}
@@ -571,7 +576,7 @@ func (r *runExecution) finalize(cause error) (RunResult, error) {
 	if cause == ErrOutput || r.stdout.err == ErrOutput || r.stderr.err == ErrOutput {
 		return RunResult{}, ErrOutput
 	}
-	if cause != nil || r.stdout.err != nil || r.stderr.err != nil {
+	if cause != nil || r.input.err != nil || r.stdout.err != nil || r.stderr.err != nil {
 		return RunResult{}, ErrRun
 	}
 	if r.waited.err != nil || r.waited.code != 0 {
@@ -668,6 +673,10 @@ func pumpStdout(ctx context.Context, file *os.File, sink OutputSink, limit uint6
 	return pump(ctx, file, limit, func(chunk []byte) (int, error) {
 		return sink.WriteContext(ctx, chunk)
 	})
+}
+
+func pumpStderr(ctx context.Context, file *os.File, destination io.Writer, limit uint64) streamResult {
+	return pump(ctx, file, limit, destination.Write)
 }
 
 func pumpDiscard(ctx context.Context, file *os.File, limit uint64) streamResult {
