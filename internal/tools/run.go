@@ -60,9 +60,12 @@ const (
 	ModeVersion RunMode = iota + 1
 	ModeDump
 	ModeRestore
+	// ModeRestoreContinue is a destructive, non-atomic trial on a disposable
+	// target. It may leave partial writes when pg_restore reports errors.
+	ModeRestoreContinue
 )
 
-// RunRequest accepts only a fixed version, dump, or restore operation. It has
+// RunRequest accepts only fixed version, dump, or restore operations. It has
 // no free-form arguments, SQL, executable path, cwd, or environment.
 type RunRequest struct {
 	Tool                     Tool
@@ -194,7 +197,7 @@ func runWith(ctx context.Context, request RunRequest, manifest packageManifest, 
 }
 
 func withRunSink(request RunRequest, run func(RunRequest, *runSink) (RunResult, error)) (result RunResult, resultErr error) {
-	if request.Mode == ModeRestore {
+	if request.Mode == ModeRestore || request.Mode == ModeRestoreContinue {
 		request.Input = &runInput{ReadCloser: request.Input}
 	}
 	sink := newRunSink(request.Stdout)
@@ -293,7 +296,7 @@ func validRunRequest(request RunRequest) bool {
 		if request.Tool != PGDump || request.Connection == nil || request.Input != nil || request.InputLimit != 0 {
 			return false
 		}
-	case ModeRestore:
+	case ModeRestore, ModeRestoreContinue:
 		if request.Tool != PGRestore || request.Connection == nil || request.Input == nil || request.InputLimit == 0 || request.InputLimit > maxStreamBytes {
 			return false
 		}
@@ -398,7 +401,7 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 	}
 	var stdin, stdinWrite *runFile
 	var err error
-	if request.Mode == ModeRestore {
+	if request.Mode == ModeRestore || request.Mode == ModeRestoreContinue {
 		reader, writer, pipeErr := ops.pipe()
 		if reader != nil {
 			stdin = run.own(reader)
@@ -808,6 +811,8 @@ func runArguments(request RunRequest) ([]string, error) {
 		return append([]string{"--format=custom"}, common...), nil
 	case ModeRestore:
 		return append([]string{"--single-transaction", "--exit-on-error"}, common...), nil
+	case ModeRestoreContinue:
+		return common, nil
 	default:
 		return nil, ErrRun
 	}

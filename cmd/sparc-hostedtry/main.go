@@ -24,13 +24,14 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sparc-hostedtry", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var archivePath, targetFile, projectRef, passphraseFile string
-	var confirmed, showPostgresError bool
+	var confirmed, showPostgresError, continueOnError bool
 	flags.StringVar(&archivePath, "archive", "", "existing encrypted archive")
 	flags.StringVar(&targetFile, "target-file", "", "file containing the target session-pooler URL")
 	flags.StringVar(&projectRef, "project-ref", "", "exact target Supabase project ref")
 	flags.StringVar(&passphraseFile, "passphrase-file", "", "file containing archive passphrase (omit to prompt)")
 	flags.BoolVar(&confirmed, "confirm-disposable-target", false, "authorize a hosted write to the disposable target")
 	flags.BoolVar(&showPostgresError, "show-postgres-error", false, "show up to 64 KiB of raw PostgreSQL error on the local terminal (may contain sensitive SQL)")
+	flags.BoolVar(&continueOnError, "continue-on-error", false, "non-atomic disposable-target trial; may leave partial writes")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || archivePath == "" || targetFile == "" || projectRef == "" || !confirmed {
 		fmt.Fprintln(stderr, "sparc-hostedtry: --archive, --target-file, --project-ref and --confirm-disposable-target are required")
 		return 2
@@ -88,10 +89,16 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	if showPostgresError {
 		localOutput = stderr
 	}
-	stage, category, trialErr := database.RestoreTrial(ctx, database.RestoreRequest{
+	request := database.RestoreRequest{
 		Target: target, TargetPassword: password, ArchivePath: archivePath, ArchivePassphrase: string(passphrase),
 		EmptyScope: database.EmptyTargetScopeV1{RequiredPresent: []string{"public"}},
-	}, localOutput)
+	}
+	restore := database.RestoreTrial
+	if continueOnError {
+		restore = database.RestoreTrialContinue
+		fmt.Fprintln(stderr, "sparc-hostedtry: non-atomic trial; errors may leave partial writes. Delete/recreate this project before another attempt if it fails")
+	}
+	stage, category, trialErr := restore(ctx, request, localOutput)
 	if trialErr != nil {
 		if category == "" {
 			fmt.Fprintf(stderr, "sparc-hostedtry: restore failed at %s; no recovery claimed. No automatic retry or cleanup was performed\n", stage)
@@ -100,7 +107,11 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	if _, err := io.WriteString(stdout, "PostgreSQL accepted the complete dump in one transaction. Source fidelity and full Supabase project recovery are NOT proven.\n"); err != nil {
+	message := "PostgreSQL accepted the complete dump in one transaction. Source fidelity and full Supabase project recovery are NOT proven.\n"
+	if continueOnError {
+		message = "pg_restore exited without errors. This non-atomic trial does NOT establish source fidelity or full Supabase project recovery.\n"
+	}
+	if _, err := io.WriteString(stdout, message); err != nil {
 		return 1
 	}
 	return 0

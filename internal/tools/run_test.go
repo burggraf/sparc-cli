@@ -26,6 +26,20 @@ var preparedRunFixture struct {
 	packagePath, cacheRoot, tempRoot string
 }
 
+func TestRunContinueRestoreHasNoCleanOrTransactionFlags(t *testing.T) {
+	request := connectedRunRequestForTest(&memorySink{})
+	request.Tool, request.Mode = PGRestore, ModeRestoreContinue
+	request.Input = io.NopCloser(strings.NewReader("test"))
+	request.InputLimit = 4
+	if !validRunRequest(request) {
+		t.Fatal("continue-on-error restore request rejected")
+	}
+	args, err := runArguments(request)
+	if err != nil || len(args) == 0 || args[0] != "--no-password" || strings.Contains(strings.Join(args, " "), "--clean") || strings.Contains(strings.Join(args, " "), "--single-transaction") || strings.Contains(strings.Join(args, " "), "--exit-on-error") {
+		t.Fatalf("continue restore args = %#v / %v", args, err)
+	}
+}
+
 func TestRunOptionalStderrCaptureOnFailure(t *testing.T) {
 	manifest, packagePath, cacheRoot := preparedRunPayload(t)
 	var diagnostic bytes.Buffer

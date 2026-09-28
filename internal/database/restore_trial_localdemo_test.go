@@ -35,6 +35,24 @@ func TestRestoreTrialClassifiesBoundedPostgresFailure(t *testing.T) {
 	}
 }
 
+func TestRestoreTrialContinueUsesNonAtomicMode(t *testing.T) {
+	ops := recoveryTestOps()
+	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
+		return emptyRecoveryObservation(), nil
+	}
+	ops.run = func(_ context.Context, request tools.RunRequest) (tools.RunResult, error) {
+		if request.Mode != tools.ModeRestoreContinue {
+			t.Fatalf("restore mode = %d", request.Mode)
+		}
+		_, _ = request.Stderr.Write([]byte("pg_restore: error: schema auth already exists\n"))
+		return tools.RunResult{}, tools.ErrRun
+	}
+	stage, category, err := restoreTrialContinueWith(context.Background(), restoreTestRequest(t), ops, nil)
+	if err != ErrRestore || stage != "pg_restore" || category != "existing object conflict" {
+		t.Fatalf("stage=%q category=%q err=%v", stage, category, err)
+	}
+}
+
 func TestRestoreTrialDoesNotRunWhenPreflightRejectsTarget(t *testing.T) {
 	ops := recoveryTestOps()
 	observation := emptyRecoveryObservation()

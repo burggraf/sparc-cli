@@ -61,6 +61,21 @@ the first 64 KiB of raw diagnostic on
 your terminal. It may contain SQL, identifiers, or other sensitive data: **do
 not paste that output into chat or logs**. This option refuses redirected stderr.
 
+## Disposable hosted restore experiment
+
+`go run -tags=localdemo ./cmd/sparc-hostedtry` is a separate developer-only
+command for an explicitly disposable Supabase project. It verifies the archive,
+checks that `public` is empty, and defaults to an atomic, stop-on-first-error
+`pg_restore`. Fresh Supabase projects already contain managed schemas, so this
+normally rejects `CREATE SCHEMA auth`. With `--continue-on-error`, `pg_restore`
+continues past errors **without a transaction**: failures can leave the target
+partially changed or its managed services inconsistent. This is a destructive
+experiment, not `sparc restore`; delete and recreate a failed target before
+retrying. No mode uses `--clean` or drops schemas. Neither mode proves complete
+project recovery, Storage bytes, or source fidelity. Never put database or
+archive secrets in argv or chat. `--show-postgres-error` shows bounded raw SQL
+errors only on the local terminal; do not paste them.
+
 ## Try developer-only backup/restore
 
 `sparc-localdemo` is a separate developer-only build target; it is not linked into normal `sparc` release builds. It creates a fresh temporary PostgreSQL 17 cluster listening only on `127.0.0.1`, creates fixed synthetic source/target databases, streams one schema into a private encrypted archive, deletes the source, and restores/checks rows and sequence state in the fresh target. No database URL is accepted, and no hosted project is contacted. The demo cluster uses trust authentication and TLS off only because it contains synthetic data and is loopback-only; this is not a connection mode for external databases. The encrypted archive remains at the requested path and is declared incomplete.

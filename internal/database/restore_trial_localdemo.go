@@ -29,6 +29,24 @@ func RestoreTrial(ctx context.Context, request RestoreRequest, localOutput io.Wr
 	return restoreTrialWith(ctx, request, defaultRecoveryOps(), localOutput)
 }
 
+// RestoreTrialContinue may partially write to a disposable target. PostgreSQL
+// errors still cause failure; this is not a successful-recovery signal.
+func RestoreTrialContinue(ctx context.Context, request RestoreRequest, localOutput io.Writer) (stage, category string, err error) {
+	return restoreTrialContinueWith(ctx, request, defaultRecoveryOps(), localOutput)
+}
+
+func restoreTrialContinueWith(ctx context.Context, request RestoreRequest, ops recoveryOps, localOutput io.Writer) (stage, category string, err error) {
+	if ops.run == nil {
+		return "input validation", "", ErrRestore
+	}
+	run := ops.run
+	ops.run = func(ctx context.Context, operation tools.RunRequest) (tools.RunResult, error) {
+		operation.Mode = tools.ModeRestoreContinue
+		return run(ctx, operation)
+	}
+	return restoreTrialWith(ctx, request, ops, localOutput)
+}
+
 func restoreTrialWith(ctx context.Context, request RestoreRequest, ops recoveryOps, localOutput io.Writer) (stage, category string, err error) {
 	stage = "input validation"
 	if ops.verify == nil || ops.prepareTool == nil || ops.observe == nil || ops.open == nil || ops.run == nil {

@@ -3,10 +3,13 @@
 package database
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +66,75 @@ func (fixtureOutputSink) WriteContext(ctx context.Context, data []byte) (int, er
 	return len(data), nil
 }
 func (fixtureOutputSink) CloseContext(context.Context) error { return nil }
+
+type fixtureCaptureSink struct{ bytes.Buffer }
+
+func (s *fixtureCaptureSink) WriteContext(ctx context.Context, data []byte) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return s.Write(data)
+}
+func (*fixtureCaptureSink) CloseContext(context.Context) error { return nil }
+
+func TestContinueRestoreCanPartiallyWriteAfterSchemaConflict(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("bundled recovery proof targets macOS arm64")
+	}
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{"CREATE DATABASE sparc_trial_source", "CREATE DATABASE sparc_trial_target"} {
+		if _, err := admin.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = admin.Close(ctx)
+	params := fixture.params
+	params.User, params.Database = "postgres", "sparc_trial_source"
+	source, err := pgx.ConnectConfig(ctx, fixture.configForParams(t, fixture.caPath, params))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{"CREATE SCHEMA trial", "CREATE TABLE trial.items (id integer PRIMARY KEY)", "INSERT INTO trial.items VALUES (42)"} {
+		if _, err := source.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = source.Close(ctx)
+	params.Database = "sparc_trial_target"
+	target, err := pgx.ConnectConfig(ctx, fixture.configForParams(t, fixture.caPath, params))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.Exec(ctx, "CREATE SCHEMA trial"); err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close(ctx)
+	root, err := os.ReadFile(fixture.caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := &tools.PGConnection{Host: fixture.params.Host, Port: fixture.port, User: "postgres", Password: []byte(fixturePassword), RootCertPEM: root}
+	var dump fixtureCaptureSink
+	connection.Database = "sparc_trial_source"
+	if _, err := tools.RunCandidate(ctx, tools.RunRequest{Tool: tools.PGDump, Mode: tools.ModeDump, Connection: connection, Timeout: time.Minute, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: &dump}); err != nil {
+		t.Fatalf("synthetic dump: %v", err)
+	}
+	connection.Database = "sparc_trial_target"
+	var diagnostic bytes.Buffer
+	_, err = tools.RunCandidate(ctx, tools.RunRequest{Tool: tools.PGRestore, Mode: tools.ModeRestoreContinue, Connection: connection, Input: io.NopCloser(bytes.NewReader(dump.Bytes())), InputLimit: uint64(dump.Len()), Timeout: time.Minute, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: fixtureOutputSink{}, Stderr: &diagnostic})
+	if err == nil || !strings.Contains(diagnostic.String(), "already exists") {
+		t.Fatalf("continued restore error=%v diagnostic=%q", err, diagnostic.String())
+	}
+	var count int
+	if err := target.QueryRow(ctx, "SELECT count(*) FROM trial.items WHERE id=42").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("partial target rows=%d err=%v", count, err)
+	}
+}
 
 func TestEncryptedCrossClusterRecovery(t *testing.T) {
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
