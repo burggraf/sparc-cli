@@ -5,6 +5,7 @@ package localdemo
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -53,10 +54,20 @@ func TestClassifyRestoreFailureWithoutExposingPostgresOutput(t *testing.T) {
 }
 
 func TestSummarizeArchiveTOCWithoutIdentifiers(t *testing.T) {
-	input := "; Archive header\n1; 2615 100 SCHEMA - auth supabase_admin\n2; 1259 101 TABLE auth users supabase_admin\n3; 0 101 TABLE DATA auth users supabase_admin\n4; 1259 102 TABLE public items postgres\n5; 0 102 TABLE DATA public items postgres\n6; 3079 103 EXTENSION - pgcrypto postgres\n"
+	input := "; Archive header\n1; 2615 100 SCHEMA - auth supabase_admin\n2; 1259 101 TABLE auth users supabase_admin\n3; 0 101 TABLE DATA auth users supabase_admin\n4; 1259 102 TABLE public items postgres\n5; 0 102 TABLE DATA public items postgres\n6; 3079 103 EXTENSION - pgcrypto postgres\n7; 1259 104 TABLE public auth storage\n8; 1259 105 TABLE auth public auth\n"
 	summary, err := summarizeArchiveTOC([]byte(input))
-	if err != nil || summary.Total != 6 || summary.Auth != 3 || summary.Public != 2 || summary.Storage != 0 || summary.Extension != 1 {
+	if err != nil || summary.Total != 8 || summary.Extension != 1 {
 		t.Fatalf("TOC summary = %#v, %v", summary, err)
+	}
+}
+
+func TestCountArchiveTOCEntries(t *testing.T) {
+	count, err := countArchiveTOCEntries([]byte("; header\n1; 0 1 TABLE DATA public items owner\n2; 0 2 TABLE auth users owner\n"))
+	if err != nil || count != 2 {
+		t.Fatalf("TOC entry count = %d, %v", count, err)
+	}
+	if _, err := countArchiveTOCEntries([]byte("not a TOC entry\n")); !errors.Is(err, ErrArchive) {
+		t.Fatalf("malformed TOC error = %v", err)
 	}
 }
 

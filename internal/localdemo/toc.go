@@ -15,6 +15,7 @@ import (
 )
 
 // TOCSummary reports only counts, never SQL, names or role identifiers.
+// Schema counts come from pg_restore's native TOC schema filters.
 type TOCSummary struct {
 	Total, Auth, Public, Storage, Extension int
 }
@@ -44,26 +45,56 @@ func InspectArchiveTOC(ctx context.Context, binDir, archivePath string, passphra
 	if err != nil {
 		return TOCSummary{}, err
 	}
+	env := []string{"LANG=C", "LC_ALL=C", "HOME=/private/tmp", "OPENSSL_CONF=/dev/null"}
+	output, err := runArchiveTOC(ctx, tools.pgrestore, env, archivePath, passphrase, "--list")
+	if err != nil {
+		return TOCSummary{}, err
+	}
+	summary, err := summarizeArchiveTOC(output)
+	clear(output)
+	if err != nil {
+		return TOCSummary{}, err
+	}
+	for _, schema := range []string{"auth", "public", "storage"} {
+		filtered, err := runArchiveTOC(ctx, tools.pgrestore, env, archivePath, passphrase, "--list", "--schema", schema)
+		if err != nil {
+			return TOCSummary{}, err
+		}
+		count, countErr := countArchiveTOCEntries(filtered)
+		clear(filtered)
+		if countErr != nil {
+			return TOCSummary{}, countErr
+		}
+		switch schema {
+		case "auth":
+			summary.Auth = count
+		case "public":
+			summary.Public = count
+		case "storage":
+			summary.Storage = count
+		}
+	}
+	return summary, nil
+}
+
+func runArchiveTOC(ctx context.Context, pgrestore string, env []string, archivePath string, passphrase []byte, args ...string) ([]byte, error) {
 	file, err := platform.OpenPrivatePayloadFile(filepath.Join(archivePath, "00000000.age"), false)
 	if err != nil {
-		return TOCSummary{}, ErrArchive
+		return nil, ErrArchive
 	}
-	defer file.Close()
 	plaintext, err := archive.Decrypt(file, string(passphrase))
 	if err != nil {
-		return TOCSummary{}, ErrArchive
+		_ = file.Close()
+		return nil, ErrArchive
 	}
 	var output boundedTOC
-	env := []string{"LANG=C", "LC_ALL=C", "HOME=/private/tmp", "OPENSSL_CONF=/dev/null"}
-	if runCommandWithTimeout(ctx, 2*time.Minute, env, tools.pgrestore, plaintext, &output, "--list") != nil {
-		return TOCSummary{}, ErrArchive
+	runErr := runCommandWithTimeout(ctx, 2*time.Minute, env, pgrestore, plaintext, &output, args...)
+	closeErr := file.Close()
+	if runErr != nil || closeErr != nil {
+		clear(output.Bytes())
+		return nil, ErrArchive
 	}
-	summary, err := summarizeArchiveTOC(output.Bytes())
-	captured := output.Bytes()
-	for i := range captured {
-		captured[i] = 0
-	}
-	return summary, err
+	return output.Bytes(), nil
 }
 
 func summarizeArchiveTOC(data []byte) (TOCSummary, error) {
@@ -85,32 +116,31 @@ func summarizeArchiveTOC(data []byte) (TOCSummary, error) {
 			return TOCSummary{}, ErrArchive
 		}
 		result.Total++
-		if parts[2] == "EXTENSION" {
+		if len(parts) >= 3 && parts[2] == "EXTENSION" {
 			result.Extension++
-		}
-		var auth, public, storage bool
-		for _, token := range parts[3:] {
-			switch token {
-			case "auth":
-				auth = true
-			case "public":
-				public = true
-			case "storage":
-				storage = true
-			}
-		}
-		if auth {
-			result.Auth++
-		}
-		if public {
-			result.Public++
-		}
-		if storage {
-			result.Storage++
 		}
 	}
 	if result.Total == 0 {
 		return TOCSummary{}, ErrArchive
 	}
 	return result, nil
+}
+
+func countArchiveTOCEntries(data []byte) (int, error) {
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		id, _, ok := strings.Cut(line, ";")
+		if !ok {
+			return 0, ErrArchive
+		}
+		if _, err := strconv.ParseUint(strings.TrimSpace(id), 10, 32); err != nil {
+			return 0, ErrArchive
+		}
+		count++
+	}
+	return count, nil
 }

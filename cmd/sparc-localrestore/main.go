@@ -100,7 +100,7 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "sparc-localrestore: archive TOC inspection failed")
 			return 1
 		}
-		if _, err := fmt.Fprintf(stdout, "Archive TOC entries: %d\nEntries mentioning auth: %d\nEntries mentioning public: %d\nEntries mentioning storage: %d\nExtension entries: %d\n", summary.Total, summary.Auth, summary.Public, summary.Storage, summary.Extension); err != nil {
+		if _, err := fmt.Fprintf(stdout, "Archive TOC entries: %d\nTOC entries in auth schema: %d\nTOC entries in public schema: %d\nTOC entries in storage schema: %d\nExtension entries: %d\n", summary.Total, summary.Auth, summary.Public, summary.Storage, summary.Extension); err != nil {
 			return 1
 		}
 		return 0
