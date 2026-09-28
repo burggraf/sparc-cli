@@ -23,17 +23,22 @@ func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sparc-hostedtry", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var archivePath, targetFile, projectRef, passphraseFile string
+	var archivePath, targetFile, projectRef, passphraseFile, authTable string
 	var confirmed, showPostgresError, continueOnError bool
 	flags.StringVar(&archivePath, "archive", "", "existing encrypted archive")
 	flags.StringVar(&targetFile, "target-file", "", "file containing the target session-pooler URL")
 	flags.StringVar(&projectRef, "project-ref", "", "exact target Supabase project ref")
 	flags.StringVar(&passphraseFile, "passphrase-file", "", "file containing archive passphrase (omit to prompt)")
+	flags.StringVar(&authTable, "auth-table", "", "strict data-only trial for one empty, allowlisted Auth table")
 	flags.BoolVar(&confirmed, "confirm-disposable-target", false, "authorize a hosted write to the disposable target")
 	flags.BoolVar(&showPostgresError, "show-postgres-error", false, "show up to 64 KiB of raw PostgreSQL error on the local terminal (may contain sensitive SQL)")
 	flags.BoolVar(&continueOnError, "continue-on-error", false, "non-atomic disposable-target trial; may leave partial writes")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || archivePath == "" || targetFile == "" || projectRef == "" || !confirmed {
 		fmt.Fprintln(stderr, "sparc-hostedtry: --archive, --target-file, --project-ref and --confirm-disposable-target are required")
+		return 2
+	}
+	if authTable != "" && continueOnError {
+		fmt.Fprintln(stderr, "sparc-hostedtry: cannot combine --auth-table with --continue-on-error")
 		return 2
 	}
 	if showPostgresError {
@@ -92,6 +97,17 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	request := database.RestoreRequest{
 		Target: target, TargetPassword: password, ArchivePath: archivePath, ArchivePassphrase: string(passphrase),
 		EmptyScope: database.EmptyTargetScopeV1{RequiredPresent: []string{"public"}},
+	}
+	if authTable != "" {
+		stage, category, rows, trialErr := database.RestoreAuthDataTableTrial(ctx, request, authTable, localOutput)
+		if trialErr != nil {
+			fmt.Fprintf(stderr, "sparc-hostedtry: selected Auth data restore failed at %s (%s); no recovery claimed\n", stage, category)
+			return 1
+		}
+		if _, err := fmt.Fprintf(stdout, "Selected Auth table data loaded transactionally: %d rows. Full recovery NOT proven.\n", rows); err != nil {
+			return 1
+		}
+		return 0
 	}
 	restore := database.RestoreTrial
 	if continueOnError {

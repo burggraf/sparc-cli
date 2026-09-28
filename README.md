@@ -74,7 +74,13 @@ experiment, not `sparc restore`; delete and recreate a failed target before
 retrying. No mode uses `--clean` or drops schemas. Neither mode proves complete
 project recovery, Storage bytes, or source fidelity. Never put database or
 archive secrets in argv or chat. `--show-postgres-error` shows bounded raw SQL
-errors only on the local terminal; do not paste them.
+errors only on the local terminal; do not paste them. For diagnosing a
+partially populated disposable target, `--auth-table sessions` selects only
+one allowlisted Auth table's data in a single transaction and refuses a
+nonempty destination table. Other supported names are `identities`,
+`refresh_tokens`, `mfa_amr_claims`, and `one_time_tokens`. It does not
+resolve cross-table dependencies, restore Auth settings/root keys, or claim
+recovery when any required table remains absent.
 
 ## Try developer-only backup/restore
 

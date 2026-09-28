@@ -35,6 +35,13 @@ func TestRestoreTrialClassifiesBoundedPostgresFailure(t *testing.T) {
 	}
 }
 
+func TestSelectedAuthDataTrialRejectsUnsupportedTablesBeforeConnection(t *testing.T) {
+	stage, category, rows, err := RestoreAuthDataTableTrial(context.Background(), RestoreRequest{}, "users;DROP SCHEMA auth", nil)
+	if err != ErrRestore || stage != "input validation" || category != "" || rows != 0 {
+		t.Fatalf("stage=%q category=%q rows=%d err=%v", stage, category, rows, err)
+	}
+}
+
 func TestRestoreTrialContinueUsesNonAtomicMode(t *testing.T) {
 	ops := recoveryTestOps()
 	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {

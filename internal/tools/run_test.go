@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,6 +25,26 @@ var preparedRunFixture struct {
 	once                             sync.Once
 	manifest                         packageManifest
 	packagePath, cacheRoot, tempRoot string
+}
+
+func TestRunSelectedAuthDataRestoreIsStrictAndAllowlisted(t *testing.T) {
+	request := connectedRunRequestForTest(&memorySink{})
+	request.Tool, request.Mode = PGRestore, ModeRestoreAuthData
+	request.Input = io.NopCloser(strings.NewReader("test"))
+	request.InputLimit = 4
+	request.RestoreTable = "sessions"
+	if !validRunRequest(request) {
+		t.Fatal("selected auth data restore request rejected")
+	}
+	args, err := runArguments(request)
+	joined := strings.Join(args, " ")
+	if err != nil || !strings.Contains(joined, "--single-transaction --exit-on-error --data-only --schema=auth --table=sessions") || strings.Contains(joined, "--clean") {
+		t.Fatalf("selected restore args = %#v / %v", args, err)
+	}
+	request.RestoreTable = "users;DROP SCHEMA public"
+	if validRunRequest(request) {
+		t.Fatal("arbitrary table name accepted")
+	}
 }
 
 func TestRunContinueRestoreHasNoCleanOrTransactionFlags(t *testing.T) {
@@ -216,6 +237,19 @@ func TestRunRestoreArgumentsRequireTypedRestoreMode(t *testing.T) {
 		if validRunRequest(test) {
 			t.Fatalf("accepted invalid typed request: %+v", test)
 		}
+	}
+}
+
+type brokenPipeRunWriter struct{}
+
+func (brokenPipeRunWriter) Write([]byte) (int, error) { return 0, syscall.EPIPE }
+
+func TestSelectedRestoreDrainsVerifiedSourceWhenChildClosesStdin(t *testing.T) {
+	data := strings.Repeat("a", runBufferBytes+1)
+	selected := pumpInputForSelected(context.Background(), strings.NewReader(data), brokenPipeRunWriter{}, uint64(len(data)))
+	strict := pumpInput(context.Background(), strings.NewReader(data), brokenPipeRunWriter{}, uint64(len(data)))
+	if selected.err != nil || selected.bytes != uint64(len(data)) || strict.err != ErrRun {
+		t.Fatalf("selected=%#v strict=%#v", selected, strict)
 	}
 }
 

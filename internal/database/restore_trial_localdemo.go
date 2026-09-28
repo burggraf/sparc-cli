@@ -81,25 +81,33 @@ func restoreTrialWith(ctx context.Context, request RestoreRequest, ops recoveryO
 	}
 	err = restoreWith(ctx, request, ops)
 	if err != nil && stage == "pg_restore" {
-		message := strings.ToLower(diagnostic.String())
-		switch {
-		case strings.Contains(message, "role ") && strings.Contains(message, "does not exist"):
-			category = "missing database role"
-		case strings.Contains(message, "extension ") && (strings.Contains(message, "does not exist") || strings.Contains(message, "not available")):
-			category = "missing extension"
-		case strings.Contains(message, "permission denied") || strings.Contains(message, "must be owner of"):
-			category = "permission denied"
-		case strings.Contains(message, "already exists"):
-			category = "existing object conflict"
-		case diagnostic.Len() > 0:
-			category = "other PostgreSQL error"
-		default:
-			category = "client stream or connection failure (details unavailable)"
-		}
+		category = classifyTrialFailure(diagnostic.Bytes())
 		if localOutput != nil {
 			_, _ = localOutput.Write(diagnostic.Bytes())
 		}
 	}
 	clear(diagnostic.Bytes())
 	return stage, category, err
+}
+
+func classifyTrialFailure(stderr []byte) string {
+	message := strings.ToLower(string(stderr))
+	switch {
+	case strings.Contains(message, "role ") && strings.Contains(message, "does not exist"):
+		return "missing database role"
+	case strings.Contains(message, "extension ") && (strings.Contains(message, "does not exist") || strings.Contains(message, "not available")):
+		return "missing extension"
+	case strings.Contains(message, "permission denied") || strings.Contains(message, "must be owner of"):
+		return "permission denied"
+	case strings.Contains(message, "violates foreign key constraint"):
+		return "foreign key constraint violation"
+	case strings.Contains(message, "duplicate key value"):
+		return "duplicate key conflict"
+	case strings.Contains(message, "already exists"):
+		return "existing object conflict"
+	case len(stderr) > 0:
+		return "other PostgreSQL error"
+	default:
+		return "client stream or connection failure (details unavailable)"
+	}
 }

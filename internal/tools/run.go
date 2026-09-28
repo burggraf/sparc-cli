@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/burggraf/sparc-cli/internal/credentials"
@@ -63,6 +64,9 @@ const (
 	// ModeRestoreContinue is a destructive, non-atomic trial on a disposable
 	// target. It may leave partial writes when pg_restore reports errors.
 	ModeRestoreContinue
+	// ModeRestoreAuthData is a strict, single-table data-only recovery trial
+	// restricted to known Auth tables on a disposable target.
+	ModeRestoreAuthData
 )
 
 // RunRequest accepts only fixed version, dump, or restore operations. It has
@@ -74,6 +78,7 @@ type RunRequest struct {
 	testHostAddr             string
 	Input                    io.ReadCloser
 	InputLimit               uint64
+	RestoreTable             string
 	Timeout, CleanupTimeout  time.Duration
 	StdoutLimit, StderrLimit uint64
 	Stdout                   OutputSink
@@ -197,7 +202,7 @@ func runWith(ctx context.Context, request RunRequest, manifest packageManifest, 
 }
 
 func withRunSink(request RunRequest, run func(RunRequest, *runSink) (RunResult, error)) (result RunResult, resultErr error) {
-	if request.Mode == ModeRestore || request.Mode == ModeRestoreContinue {
+	if request.Mode == ModeRestore || request.Mode == ModeRestoreContinue || request.Mode == ModeRestoreAuthData {
 		request.Input = &runInput{ReadCloser: request.Input}
 	}
 	sink := newRunSink(request.Stdout)
@@ -286,7 +291,7 @@ func validateRunInputs(ctx context.Context, tool Tool, manifest packageManifest,
 }
 
 func validRunRequest(request RunRequest) bool {
-	if !validTool(request.Tool) || request.Timeout <= 0 || request.CleanupTimeout <= 0 || request.CleanupTimeout > maxCleanupTimeout || request.StdoutLimit == 0 || request.StderrLimit == 0 || request.Stdout == nil {
+	if !validTool(request.Tool) || request.Timeout <= 0 || request.CleanupTimeout <= 0 || request.CleanupTimeout > maxCleanupTimeout || request.StdoutLimit == 0 || request.StderrLimit == 0 || request.Stdout == nil || request.Mode != ModeRestoreAuthData && request.RestoreTable != "" {
 		return false
 	}
 	switch request.Mode {
@@ -296,8 +301,8 @@ func validRunRequest(request RunRequest) bool {
 		if request.Tool != PGDump || request.Connection == nil || request.Input != nil || request.InputLimit != 0 {
 			return false
 		}
-	case ModeRestore, ModeRestoreContinue:
-		if request.Tool != PGRestore || request.Connection == nil || request.Input == nil || request.InputLimit == 0 || request.InputLimit > maxStreamBytes {
+	case ModeRestore, ModeRestoreContinue, ModeRestoreAuthData:
+		if request.Tool != PGRestore || request.Connection == nil || request.Input == nil || request.InputLimit == 0 || request.InputLimit > maxStreamBytes || request.Mode == ModeRestoreAuthData && !allowedAuthDataTable(request.RestoreTable) {
 			return false
 		}
 	default:
@@ -401,7 +406,7 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 	}
 	var stdin, stdinWrite *runFile
 	var err error
-	if request.Mode == ModeRestore || request.Mode == ModeRestoreContinue {
+	if request.Mode == ModeRestore || request.Mode == ModeRestoreContinue || request.Mode == ModeRestoreAuthData {
 		reader, writer, pipeErr := ops.pipe()
 		if reader != nil {
 			stdin = run.own(reader)
@@ -456,7 +461,11 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 		run.workers.Add(1)
 		go func() {
 			defer run.workers.Done()
-			result := pumpInput(ctx, request.Input, stdinWrite.file, request.InputLimit)
+			pump := pumpInput
+			if request.Mode == ModeRestoreAuthData {
+				pump = pumpInputForSelected
+			}
+			result := pump(ctx, request.Input, stdinWrite.file, request.InputLimit)
 			if stdinWrite.close() != nil && result.err == nil {
 				result.err = ErrRun
 			}
@@ -687,9 +696,18 @@ func pumpDiscard(ctx context.Context, file *os.File, limit uint64) streamResult 
 }
 
 func pumpInput(ctx context.Context, source io.Reader, destination io.Writer, limit uint64) streamResult {
+	return pumpInputWithEarlyClose(ctx, source, destination, limit, false)
+}
+
+func pumpInputForSelected(ctx context.Context, source io.Reader, destination io.Writer, limit uint64) streamResult {
+	return pumpInputWithEarlyClose(ctx, source, destination, limit, true)
+}
+
+func pumpInputWithEarlyClose(ctx context.Context, source io.Reader, destination io.Writer, limit uint64, allowEarlyClose bool) streamResult {
 	buffer := make([]byte, runBufferBytes)
 	var total uint64
 	zeroReads := 0
+	childClosed := false
 	for {
 		if ctx.Err() != nil {
 			return streamResult{bytes: total, err: ErrRun}
@@ -709,18 +727,27 @@ func pumpInput(ctx context.Context, source io.Reader, destination io.Writer, lim
 			if excess {
 				allowed = int(remaining)
 			}
-			for written := 0; written < allowed; {
-				if ctx.Err() != nil {
-					return streamResult{bytes: total, err: ErrRun}
-				}
-				count, writeErr := destination.Write(buffer[written:allowed])
-				if count < 0 || count > allowed-written {
-					return streamResult{bytes: total, err: ErrRun}
-				}
-				written += count
-				total += uint64(count)
-				if writeErr != nil || count == 0 {
-					return streamResult{bytes: total, err: ErrRun}
+			total += uint64(allowed)
+			if !childClosed {
+				for written := 0; written < allowed; {
+					if ctx.Err() != nil {
+						return streamResult{bytes: total, err: ErrRun}
+					}
+					count, writeErr := destination.Write(buffer[written:allowed])
+					if count < 0 || count > allowed-written {
+						return streamResult{bytes: total, err: ErrRun}
+					}
+					written += count
+					if allowEarlyClose && errors.Is(writeErr, syscall.EPIPE) {
+						// pg_restore may stop reading a verified custom archive once
+						// the selected table is complete. Still drain the source to
+						// catch decryption errors and enforce InputLimit.
+						childClosed = true
+						break
+					}
+					if writeErr != nil || count == 0 {
+						return streamResult{bytes: total, err: ErrRun}
+					}
 				}
 			}
 			if excess {
@@ -813,8 +840,22 @@ func runArguments(request RunRequest) ([]string, error) {
 		return append([]string{"--single-transaction", "--exit-on-error"}, common...), nil
 	case ModeRestoreContinue:
 		return common, nil
+	case ModeRestoreAuthData:
+		if !allowedAuthDataTable(request.RestoreTable) {
+			return nil, ErrRun
+		}
+		return append([]string{"--single-transaction", "--exit-on-error", "--data-only", "--schema=auth", "--table=" + request.RestoreTable}, common...), nil
 	default:
 		return nil, ErrRun
+	}
+}
+
+func allowedAuthDataTable(name string) bool {
+	switch name {
+	case "sessions", "identities", "refresh_tokens", "mfa_amr_claims", "one_time_tokens":
+		return true
+	default:
+		return false
 	}
 }
 
