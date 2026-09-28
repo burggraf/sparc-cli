@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -67,18 +68,33 @@ const (
 	// ModeRestoreAuthData is a strict, single-table data-only recovery trial
 	// restricted to known Auth tables on a disposable target.
 	ModeRestoreAuthData
+	// ModeRestoreSQL streams a plain SQL restore script through psql in one
+	// transaction and stops at the first error.
+	ModeRestoreSQL
+	// ModeDumpSchema and ModeDumpData create separate plain-SQL components;
+	// both require explicit schema selections.
+	ModeDumpSchema
+	ModeDumpData
 )
 
+// TableRef is a simple schema/table pair used by a typed dump exclusion.
+type TableRef struct {
+	Schema string
+	Name   string
+}
+
 // RunRequest accepts only fixed version, dump, or restore operations. It has
-// no free-form arguments, SQL, executable path, cwd, or environment.
+// no free-form arguments, executable path, cwd, or environment.
 type RunRequest struct {
 	Tool                     Tool
 	Mode                     RunMode
 	Connection               *PGConnection
 	testHostAddr             string
 	Input                    io.ReadCloser
-	InputLimit               uint64
+	InputLimit               uint64 // exact plaintext length and hard stream cap
 	RestoreTable             string
+	DumpSchemas              []string
+	ExcludedTables           []TableRef
 	Timeout, CleanupTimeout  time.Duration
 	StdoutLimit, StderrLimit uint64
 	Stdout                   OutputSink
@@ -202,7 +218,7 @@ func runWith(ctx context.Context, request RunRequest, manifest packageManifest, 
 }
 
 func withRunSink(request RunRequest, run func(RunRequest, *runSink) (RunResult, error)) (result RunResult, resultErr error) {
-	if request.Mode == ModeRestore || request.Mode == ModeRestoreContinue || request.Mode == ModeRestoreAuthData {
+	if request.Mode == ModeRestore || request.Mode == ModeRestoreContinue || request.Mode == ModeRestoreAuthData || request.Mode == ModeRestoreSQL {
 		request.Input = &runInput{ReadCloser: request.Input}
 	}
 	sink := newRunSink(request.Stdout)
@@ -291,7 +307,7 @@ func validateRunInputs(ctx context.Context, tool Tool, manifest packageManifest,
 }
 
 func validRunRequest(request RunRequest) bool {
-	if !validTool(request.Tool) || request.Timeout <= 0 || request.CleanupTimeout <= 0 || request.CleanupTimeout > maxCleanupTimeout || request.StdoutLimit == 0 || request.StderrLimit == 0 || request.Stdout == nil || request.Mode != ModeRestoreAuthData && request.RestoreTable != "" {
+	if !validTool(request.Tool) || request.Timeout <= 0 || request.CleanupTimeout <= 0 || request.CleanupTimeout > maxCleanupTimeout || request.StdoutLimit == 0 || request.StderrLimit == 0 || request.Stdout == nil || request.Mode != ModeRestoreAuthData && request.RestoreTable != "" || request.Mode != ModeDumpSchema && request.Mode != ModeDumpData && (len(request.DumpSchemas) != 0 || len(request.ExcludedTables) != 0) {
 		return false
 	}
 	switch request.Mode {
@@ -301,8 +317,20 @@ func validRunRequest(request RunRequest) bool {
 		if request.Tool != PGDump || request.Connection == nil || request.Input != nil || request.InputLimit != 0 {
 			return false
 		}
+	case ModeDumpSchema:
+		if request.Tool != PGDump || request.Connection == nil || request.Input != nil || request.InputLimit != 0 || !validDumpSchemas(request.DumpSchemas, false) || len(request.ExcludedTables) != 0 {
+			return false
+		}
+	case ModeDumpData:
+		if request.Tool != PGDump || request.Connection == nil || request.Input != nil || request.InputLimit != 0 || !validDumpSchemas(request.DumpSchemas, true) || !validDataExclusions(request.ExcludedTables) {
+			return false
+		}
 	case ModeRestore, ModeRestoreContinue, ModeRestoreAuthData:
 		if request.Tool != PGRestore || request.Connection == nil || request.Input == nil || request.InputLimit == 0 || request.InputLimit > maxStreamBytes || request.Mode == ModeRestoreAuthData && !allowedAuthDataTable(request.RestoreTable) {
+			return false
+		}
+	case ModeRestoreSQL:
+		if request.Tool != PSQL || request.Connection == nil || request.Input == nil || request.InputLimit == 0 || request.InputLimit > maxStreamBytes {
 			return false
 		}
 	default:
@@ -376,8 +404,10 @@ type runExecution struct {
 	ops     runOps
 	sink    *runSink
 
-	files   []*runFile
-	process ownedProcess
+	files              []*runFile
+	process            ownedProcess
+	processClosed      bool
+	processCloseFailed bool
 
 	inputResult  chan streamResult
 	stdoutResult chan streamResult
@@ -406,7 +436,7 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 	}
 	var stdin, stdinWrite *runFile
 	var err error
-	if request.Mode == ModeRestore || request.Mode == ModeRestoreContinue || request.Mode == ModeRestoreAuthData {
+	if request.Mode == ModeRestore || request.Mode == ModeRestoreContinue || request.Mode == ModeRestoreAuthData || request.Mode == ModeRestoreSQL {
 		reader, writer, pipeErr := ops.pipe()
 		if reader != nil {
 			stdin = run.own(reader)
@@ -466,7 +496,7 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 				pump = pumpInputForSelected
 			}
 			result := pump(ctx, request.Input, stdinWrite.file, request.InputLimit)
-			if stdinWrite.close() != nil && result.err == nil {
+			if result.err == nil && stdinWrite.close() != nil {
 				result.err = ErrRun
 			}
 			run.inputResult <- result
@@ -520,6 +550,14 @@ func executeRun(ctx context.Context, cancel context.CancelFunc, request RunReque
 		case value := <-run.inputResult:
 			run.input, run.inputDone = value, true
 			run.inputResult = nil
+			if value.err != nil {
+				// Kill before closing stdin so psql cannot mistake a bad stream for EOF;
+				// leave stdout/stderr pumps running to retain bounded diagnostics.
+				abortCtx, abortCancel := context.WithTimeout(context.Background(), request.CleanupTimeout)
+				run.closeProcess(abortCtx)
+				abortCancel()
+				_ = stdinWrite.close()
+			}
 			// A child may reject the first SQL statement and close stdin while
 			// writing its error to stderr. Let the output pumps drain first.
 		case value := <-run.stdoutResult:
@@ -558,7 +596,13 @@ func (r *runExecution) finalize(cause error) (RunResult, error) {
 	defer cleanupCancel()
 	r.cancel()
 
-	lifecycleErr := false
+	lifecycleErr := r.processCloseFailed
+	// On failure, terminate the child before closing its stdin pipe: a transactional
+	// SQL client must not interpret a failed input stream as successful EOF.
+	if cause != nil && r.request.Input != nil && r.process != nil {
+		r.closeProcess(cleanupCtx)
+		lifecycleErr = lifecycleErr || r.processCloseFailed
+	}
 	// Closing parent pipe ends unblocks pumps even when the child or sink fails.
 	for _, file := range r.files {
 		if file.close() != nil {
@@ -568,12 +612,9 @@ func (r *runExecution) finalize(cause error) (RunResult, error) {
 	if r.request.Input != nil && r.request.Input.Close() != nil {
 		lifecycleErr = true
 	}
-	if r.process != nil && r.process.CloseContext(cleanupCtx) != nil {
-		lifecycleErr = true
-		// The normal cleanup budget must not let an owned waiter or process tree
-		// escape. CloseContext is idempotent, so continue fail-stop cleanup after
-		// the deadline until ownership resolves.
-		_ = r.process.CloseContext(context.Background())
+	if r.process != nil && !r.processClosed {
+		r.closeProcess(cleanupCtx)
+		lifecycleErr = lifecycleErr || r.processCloseFailed
 	}
 	if !r.collect(cleanupCtx) {
 		lifecycleErr = true
@@ -595,6 +636,17 @@ func (r *runExecution) finalize(cause error) (RunResult, error) {
 		return RunResult{}, ErrRun
 	}
 	return RunResult{ExitCode: r.waited.code, StdoutBytes: r.stdout.bytes, StderrBytes: r.stderr.bytes}, nil
+}
+
+func (r *runExecution) closeProcess(ctx context.Context) {
+	if r.process == nil || r.processClosed {
+		return
+	}
+	r.processClosed = true
+	if r.process.CloseContext(ctx) != nil {
+		r.processCloseFailed = true
+		_ = r.process.CloseContext(context.Background())
+	}
 }
 
 func (r *runExecution) collect(ctx context.Context) bool {
@@ -756,6 +808,9 @@ func pumpInputWithEarlyClose(ctx context.Context, source io.Reader, destination 
 			zeroReads = 0
 		}
 		if readErr == io.EOF {
+			if total != limit {
+				return streamResult{bytes: total, err: ErrRun}
+			}
 			return streamResult{bytes: total}
 		}
 		if readErr != nil {
@@ -836,6 +891,21 @@ func runArguments(request RunRequest) ([]string, error) {
 	switch request.Mode {
 	case ModeDump:
 		return append([]string{"--format=custom"}, common...), nil
+	case ModeDumpSchema:
+		args := append([]string{"--format=plain", "--schema-only"}, common...)
+		for _, schema := range request.DumpSchemas {
+			args = append(args, "--schema="+schema)
+		}
+		return args, nil
+	case ModeDumpData:
+		args := append([]string{"--format=plain", "--data-only"}, common...)
+		for _, schema := range request.DumpSchemas {
+			args = append(args, "--schema="+schema)
+		}
+		for _, table := range request.ExcludedTables {
+			args = append(args, "--exclude-table="+table.Schema+"."+table.Name)
+		}
+		return args, nil
 	case ModeRestore:
 		return append([]string{"--single-transaction", "--exit-on-error"}, common...), nil
 	case ModeRestoreContinue:
@@ -845,6 +915,8 @@ func runArguments(request RunRequest) ([]string, error) {
 			return nil, ErrRun
 		}
 		return append([]string{"--single-transaction", "--exit-on-error", "--data-only", "--schema=auth", "--table=" + request.RestoreTable}, common...), nil
+	case ModeRestoreSQL:
+		return append([]string{"-X", "--single-transaction", "--set=ON_ERROR_STOP=1"}, common...), nil
 	default:
 		return nil, ErrRun
 	}
@@ -857,6 +929,89 @@ func allowedAuthDataTable(name string) bool {
 	default:
 		return false
 	}
+}
+
+func validDumpSchemas(schemas []string, allowManagedData bool) bool {
+	if len(schemas) == 0 || len(schemas) > 64 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(schemas))
+	for _, schema := range schemas {
+		if !simplePGIdentifier(schema) || blockedDumpSchema(strings.ToLower(schema), allowManagedData) {
+			return false
+		}
+		if _, exists := seen[schema]; exists {
+			return false
+		}
+		seen[schema] = struct{}{}
+	}
+	return true
+}
+
+func validDataExclusions(tables []TableRef) bool {
+	if !validExcludedTables(tables) {
+		return false
+	}
+	for _, required := range [...]TableRef{
+		{Schema: "auth", Name: "schema_migrations"},
+		{Schema: "storage", Name: "migrations"},
+		{Schema: "supabase_functions", Name: "migrations"},
+		{Schema: "storage", Name: "buckets_vectors"},
+		{Schema: "storage", Name: "vector_indexes"},
+	} {
+		found := false
+		for _, actual := range tables {
+			if actual == required {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func validExcludedTables(tables []TableRef) bool {
+	if len(tables) > 1024 {
+		return false
+	}
+	seen := make(map[TableRef]struct{}, len(tables))
+	for _, table := range tables {
+		if !simplePGIdentifier(table.Schema) || !simplePGIdentifier(table.Name) {
+			return false
+		}
+		if _, exists := seen[table]; exists {
+			return false
+		}
+		seen[table] = struct{}{}
+	}
+	return true
+}
+
+func blockedDumpSchema(schema string, allowManagedData bool) bool {
+	if allowManagedData && (schema == "auth" || schema == "storage") {
+		return false
+	}
+	switch schema {
+	case "information_schema", "_analytics", "_realtime", "_supavisor", "auth", "etl", "extensions", "pgbouncer", "realtime", "storage", "supabase_functions", "supabase_migrations", "cron", "dbdev", "graphql", "graphql_public", "net", "pgmq", "pgsodium", "pgsodium_masks", "pgtle", "repack", "tiger", "tiger_data", "topology", "vault":
+		return true
+	}
+	return strings.HasPrefix(schema, "pg_") || strings.HasPrefix(schema, "timescaledb_") || strings.HasPrefix(schema, "_timescaledb_")
+}
+
+func simplePGIdentifier(value string) bool {
+	if len(value) == 0 || len(value) > 63 || !(value[0] == '_' || value[0] >= 'a' && value[0] <= 'z' || value[0] >= 'A' && value[0] <= 'Z') {
+		return false
+	}
+	for index := 1; index < len(value); index++ {
+		c := value[index]
+		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func runEnvironment(home, temp, config, passfile, rootCert, testHostAddr string) []string {

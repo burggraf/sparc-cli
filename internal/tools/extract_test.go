@@ -653,7 +653,10 @@ func buildTar(t *testing.T, entries []testArchiveEntry) []byte {
 func gzipBytes(t *testing.T, data []byte) []byte {
 	t.Helper()
 	var compressed bytes.Buffer
-	gz := gzip.NewWriter(&compressed)
+	gz, err := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := gz.Write(data); err != nil {
 		t.Fatal(err)
 	}

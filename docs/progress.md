@@ -1612,3 +1612,36 @@ PostgreSQL 17 clusters. Provenance and all payload hashes are in
 Mach-O `minos 13.0` is not a macOS 13 support claim. Other platform payloads,
 signing, and notarization remain open. No hosted database backup was performed;
 client-bundling approval did not authorize hosted data export.
+
+### Task 3: atomic Supabase-baseline split restore recipe (2026-09-28)
+
+Added typed `pg_dump` schema/data operations and strict `psql` SQL-stream
+restore. The internal local recipe runs application-schema SQL, a fixed
+`SET LOCAL session_replication_role = replica`, and eligible Auth/Storage/data
+SQL through one psql transaction/session with `ON_ERROR_STOP`. The input pipe
+checks exact declared lengths; a read/truncation error kills the child before
+closing stdin, preventing EOF from committing a partial SQL transaction. Fixed
+data exclusions cover platform migration tables and Storage vector tables.
+`docs/tools.md` records the current runner boundary and that the recipe is not
+production `sparc restore`.
+
+The disposable PostgreSQL 17.9 baseline test reproduced the legacy full-dump
+`auth` schema conflict; verified successful split restore preserves target
+migration history and suppresses the target Auth trigger only during the load;
+verified late uniqueness failure, truncated input, and insufficient
+replication-role permission all roll back. It also confirms target triggers
+resume after restore. These are local database execution and rollback results,
+not proof of archive-time fidelity or complete Supabase recovery.
+
+Fresh checks passed: `go test ./... -count=1 -timeout=600s`,
+`go test -race -p=1 ./... -count=1 -timeout=600s`, tagged PostgreSQL client and
+database integration tests against the disposable PG17.9 fixture, the focused
+Task 3 integration race test, `go test ./internal/tools ./internal/database -count=1 -timeout=5m`, and `go vet ./...`. Synthetic archive-compression fixtures
+now use gzip BestSpeed so race tests exercise runner behavior without spending
+minutes compressing an executable; production/archive-format behavior is
+unchanged.
+
+**Still incomplete:** production split capture/profile, archive-derived
+fidelity checks, guarded production restore, custom roles and project services
+remain unimplemented. `./tmp/test` remains the legacy single custom-format
+component marked `incomplete`; no hosted connection or write was performed.

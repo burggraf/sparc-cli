@@ -197,6 +197,256 @@ func TestContinueRestoreCanPartiallyWriteAfterSchemaConflict(t *testing.T) {
 	}
 }
 
+func TestSupabaseManagedBaselineSplitRestoreIsAtomic(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("bundled recovery proof targets macOS arm64")
+	}
+	fixture := newPostgresFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	admin, err := pgx.ConnectConfig(ctx, fixture.configForUser(t, fixture.caPath, "postgres"))
+	if err != nil {
+		t.Fatal("unable to connect to local fixture administrator")
+	}
+	for _, name := range []string{"sparc_profile_source", "sparc_profile_target", "sparc_truncated_target"} {
+		if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+			t.Fatal("unable to create local recovery database")
+		}
+	}
+	if err := admin.Close(ctx); err != nil {
+		t.Fatal("unable to close local fixture administrator")
+	}
+	connectDB := func(name string) *pgx.Conn {
+		t.Helper()
+		params := fixture.params
+		params.User, params.Database = "postgres", name
+		db, err := pgx.ConnectConfig(ctx, fixture.configForParams(t, fixture.caPath, params))
+		if err != nil {
+			t.Fatal("unable to connect to local recovery database")
+		}
+		return db
+	}
+
+	source := connectDB("sparc_profile_source")
+	for _, statement := range []string{
+		"CREATE SCHEMA auth",
+		"CREATE TABLE auth.users (id integer PRIMARY KEY, email text NOT NULL)",
+		"CREATE TABLE auth.sessions (id integer PRIMARY KEY, user_id integer NOT NULL REFERENCES auth.users(id))",
+		"CREATE TABLE auth.schema_migrations (version text PRIMARY KEY)",
+		"CREATE SCHEMA sparc_app",
+		"CREATE TABLE sparc_app.items (id integer PRIMARY KEY, value text NOT NULL)",
+		"CREATE TABLE sparc_app.children (id integer PRIMARY KEY, item_id integer NOT NULL REFERENCES sparc_app.items(id))",
+		"CREATE SCHEMA storage",
+		"CREATE TABLE storage.objects (id integer PRIMARY KEY, object_name text NOT NULL)",
+		"CREATE TABLE storage.migrations (version text PRIMARY KEY)",
+		"INSERT INTO auth.users VALUES (17, 'synthetic-user')",
+		"INSERT INTO auth.sessions VALUES (23, 17)",
+		"INSERT INTO auth.schema_migrations VALUES ('source-auth-history')",
+		"INSERT INTO sparc_app.items VALUES (31, 'synthetic-item')",
+		"INSERT INTO sparc_app.children VALUES (32, 31)",
+		"INSERT INTO storage.objects VALUES (41, 'source-object')",
+		"INSERT INTO storage.migrations VALUES ('source-storage-history')",
+	} {
+		if _, err := source.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to seed synthetic source database")
+		}
+	}
+	if err := source.Close(ctx); err != nil {
+		t.Fatal("unable to close synthetic source database")
+	}
+
+	seedBaseline := func(db *pgx.Conn, withConflict bool) {
+		t.Helper()
+		statements := []string{
+			"CREATE SCHEMA auth",
+			"CREATE TABLE auth.users (id integer PRIMARY KEY, email text NOT NULL)",
+			"CREATE TABLE auth.sessions (id integer PRIMARY KEY, user_id integer NOT NULL REFERENCES auth.users(id))",
+			"CREATE TABLE auth.schema_migrations (version text PRIMARY KEY)",
+			"CREATE TABLE auth.trigger_log (session_id integer NOT NULL)",
+			"CREATE FUNCTION auth.record_session_insert() RETURNS trigger LANGUAGE plpgsql AS $body$ BEGIN INSERT INTO auth.trigger_log VALUES (NEW.id); RETURN NEW; END; $body$",
+			"CREATE TRIGGER session_insert_audit AFTER INSERT ON auth.sessions FOR EACH ROW EXECUTE FUNCTION auth.record_session_insert()",
+			"INSERT INTO auth.schema_migrations VALUES ('target-auth-history')",
+			"CREATE SCHEMA storage",
+			"CREATE TABLE storage.objects (id integer PRIMARY KEY, object_name text NOT NULL)",
+			"CREATE TABLE storage.migrations (version text PRIMARY KEY)",
+			"INSERT INTO storage.migrations VALUES ('target-storage-history')",
+		}
+		if withConflict {
+			statements = append(statements, "INSERT INTO storage.objects VALUES (41, 'target-conflict')")
+		}
+		for _, statement := range statements {
+			if _, err := db.Exec(ctx, statement); err != nil {
+				t.Fatal("unable to seed Supabase-shaped managed baseline")
+			}
+		}
+	}
+	target := connectDB("sparc_profile_target")
+	seedBaseline(target, true)
+	defer target.Close(ctx)
+	truncated := connectDB("sparc_truncated_target")
+	seedBaseline(truncated, false)
+	defer truncated.Close(ctx)
+
+	rootCert, err := os.ReadFile(fixture.caPath)
+	if err != nil {
+		t.Fatal("unable to read local fixture CA")
+	}
+	connection := func(database string) *tools.PGConnection {
+		return &tools.PGConnection{Host: fixture.params.Host, Port: fixture.port, User: "postgres", Database: database, Password: []byte(fixturePassword), RootCertPEM: rootCert}
+	}
+	capture := func(mode tools.RunMode, schemas []string, excluded []tools.TableRef) *fixtureCaptureSink {
+		t.Helper()
+		sink := &fixtureCaptureSink{}
+		_, err := tools.RunCandidate(ctx, tools.RunRequest{
+			Tool: tools.PGDump, Mode: mode, Connection: connection("sparc_profile_source"), DumpSchemas: schemas, ExcludedTables: excluded,
+			Timeout: time.Minute, CleanupTimeout: time.Second, StdoutLimit: 1 << 30, StderrLimit: 1 << 20, Stdout: sink,
+		})
+		if err != nil {
+			t.Fatal("local typed PostgreSQL capture failed")
+		}
+		return sink
+	}
+	full := capture(tools.ModeDump, nil, nil)
+	var fullDiagnostic bytes.Buffer
+	_, err = tools.RunCandidate(ctx, tools.RunRequest{
+		Tool: tools.PGRestore, Mode: tools.ModeRestore, Connection: connection("sparc_profile_target"),
+		Input: io.NopCloser(bytes.NewReader(full.Bytes())), InputLimit: uint64(full.Len()), Timeout: time.Minute,
+		CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: fixtureOutputSink{}, Stderr: &fullDiagnostic,
+	})
+	if err == nil || !strings.Contains(fullDiagnostic.String(), `schema "auth" already exists`) {
+		t.Fatal("legacy full-dump restore did not fail on the pre-existing managed Auth schema")
+	}
+	var appSchema bool
+	var users, sessions, triggerEvents, migrationRows int
+	if err := target.QueryRow(ctx, "SELECT to_regnamespace('sparc_app') IS NOT NULL").Scan(&appSchema); err != nil || appSchema {
+		t.Fatal("failed full-dump restore changed application schema state")
+	}
+	if err := target.QueryRow(ctx, "SELECT (SELECT count(*) FROM auth.users), (SELECT count(*) FROM auth.sessions), (SELECT count(*) FROM auth.trigger_log), (SELECT count(*) FROM auth.schema_migrations)").Scan(&users, &sessions, &triggerEvents, &migrationRows); err != nil || users != 0 || sessions != 0 || triggerEvents != 0 || migrationRows != 1 {
+		t.Fatal("failed full-dump restore changed managed baseline rows")
+	}
+
+	schemaDump := capture(tools.ModeDumpSchema, []string{"sparc_app"}, nil)
+	dataDump := capture(tools.ModeDumpData, []string{"auth", "sparc_app", "storage"}, []tools.TableRef{
+		{Schema: "auth", Name: "schema_migrations"}, {Schema: "storage", Name: "migrations"},
+		{Schema: "supabase_functions", Name: "migrations"}, {Schema: "storage", Name: "buckets_vectors"}, {Schema: "storage", Name: "vector_indexes"},
+	})
+	for _, excluded := range []string{"CREATE SCHEMA auth", "CREATE SCHEMA storage"} {
+		if bytes.Contains(schemaDump.Bytes(), []byte(excluded)) {
+			t.Fatal("schema-only component includes managed schema DDL")
+		}
+	}
+	for _, excluded := range []string{"source-auth-history", "source-storage-history"} {
+		if bytes.Contains(dataDump.Bytes(), []byte(excluded)) {
+			t.Fatal("data-only component includes managed migration data")
+		}
+	}
+	positions := []int{strings.Index(dataDump.String(), "COPY auth.users"), strings.Index(dataDump.String(), "COPY sparc_app.items"), strings.Index(dataDump.String(), "COPY storage.objects")}
+	if positions[0] < 0 || positions[0] >= positions[1] || positions[1] >= positions[2] {
+		t.Fatal("synthetic data fixture does not place its conflicting Storage row after application and Auth rows")
+	}
+	apply := func(db string, schema io.ReadCloser, data io.ReadCloser, schemaBytes, dataBytes uint64) error {
+		return restoreSchemaDataWith(ctx, fixtureCandidateRunner(fixture), connection(db), schema, data, schemaBytes, dataBytes)
+	}
+	if err := apply("sparc_profile_target", io.NopCloser(bytes.NewReader(schemaDump.Bytes())), io.NopCloser(bytes.NewReader(dataDump.Bytes())), uint64(schemaDump.Len()), uint64(dataDump.Len())); err == nil {
+		t.Fatal("late Storage uniqueness error unexpectedly committed the split restore")
+	}
+	var conflictRows int
+	if err := target.QueryRow(ctx, "SELECT to_regnamespace('sparc_app') IS NOT NULL, (SELECT count(*) FROM auth.users), (SELECT count(*) FROM auth.sessions), (SELECT count(*) FROM auth.trigger_log), (SELECT count(*) FROM auth.schema_migrations), (SELECT count(*) FROM storage.objects WHERE id=41 AND object_name='target-conflict')").Scan(&appSchema, &users, &sessions, &triggerEvents, &migrationRows, &conflictRows); err != nil || appSchema || users != 0 || sessions != 0 || triggerEvents != 0 || migrationRows != 1 || conflictRows != 1 {
+		t.Fatal("late data error did not roll back schema, Auth, and earlier rows")
+	}
+	if _, err := target.Exec(ctx, "DELETE FROM storage.objects WHERE id=41"); err != nil {
+		t.Fatal("unable to remove synthetic target conflict")
+	}
+	if err := apply("sparc_profile_target", io.NopCloser(bytes.NewReader(schemaDump.Bytes())), io.NopCloser(bytes.NewReader(dataDump.Bytes())), uint64(schemaDump.Len()), uint64(dataDump.Len())); err != nil {
+		t.Fatalf("atomic split restore failed against managed baseline: %v", err)
+	}
+	var item, child, session, object, authHistory, storageHistory string
+	if err := target.QueryRow(ctx, "SELECT value FROM sparc_app.items WHERE id=31").Scan(&item); err != nil {
+		t.Fatal("application row missing after split restore")
+	}
+	if err := target.QueryRow(ctx, "SELECT item_id::text FROM sparc_app.children WHERE id=32").Scan(&child); err != nil {
+		t.Fatal("application FK-dependent row missing after split restore")
+	}
+	if err := target.QueryRow(ctx, "SELECT users.email || ':' || sessions.user_id::text FROM auth.users AS users JOIN auth.sessions AS sessions ON sessions.user_id=users.id WHERE sessions.id=23").Scan(&session); err != nil {
+		t.Fatal("Auth FK-dependent rows missing after split restore")
+	}
+	if err := target.QueryRow(ctx, "SELECT object_name FROM storage.objects WHERE id=41").Scan(&object); err != nil {
+		t.Fatal("eligible Storage metadata missing after split restore")
+	}
+	if err := target.QueryRow(ctx, "SELECT version FROM auth.schema_migrations").Scan(&authHistory); err != nil {
+		t.Fatal("target Auth migration history missing")
+	}
+	if err := target.QueryRow(ctx, "SELECT version FROM storage.migrations").Scan(&storageHistory); err != nil {
+		t.Fatal("target Storage migration history missing")
+	}
+	if item != "synthetic-item" || child != "31" || session != "synthetic-user:17" || object != "source-object" || authHistory != "target-auth-history" || storageHistory != "target-storage-history" {
+		t.Fatal("split restore rows or managed migration history differed from expected fixture values")
+	}
+	if err := target.QueryRow(ctx, "SELECT count(*) FROM auth.trigger_log").Scan(&triggerEvents); err != nil || triggerEvents != 0 {
+		t.Fatal("split restore fired a target-side Auth trigger")
+	}
+	var replicationRole string
+	if err := target.QueryRow(ctx, "SELECT current_setting('session_replication_role')").Scan(&replicationRole); err != nil || replicationRole != "origin" {
+		t.Fatal("replication-role override escaped the restore transaction")
+	}
+	if _, err := target.Exec(ctx, "INSERT INTO auth.sessions VALUES (24, 17)"); err != nil {
+		t.Fatal("target Auth trigger did not resume after restore")
+	}
+	if err := target.QueryRow(ctx, "SELECT count(*) FROM auth.trigger_log").Scan(&triggerEvents); err != nil || triggerEvents != 1 {
+		t.Fatal("target Auth trigger did not fire after the scoped restore")
+	}
+	for _, statement := range []string{"DELETE FROM auth.sessions WHERE id=24", "DELETE FROM auth.trigger_log"} {
+		if _, err := target.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to reset synthetic Auth trigger check")
+		}
+	}
+
+	failingData := failingSQLReader{Reader: bytes.NewReader(dataDump.Bytes())}
+	if err := apply("sparc_truncated_target", io.NopCloser(bytes.NewReader(schemaDump.Bytes())), failingData, uint64(schemaDump.Len()), uint64(dataDump.Len())); err == nil {
+		t.Fatal("truncated data component unexpectedly committed")
+	}
+	if err := truncated.QueryRow(ctx, "SELECT to_regnamespace('sparc_app') IS NOT NULL, (SELECT count(*) FROM auth.users), (SELECT count(*) FROM auth.sessions)").Scan(&appSchema, &users, &sessions); err != nil || appSchema || users != 0 || sessions != 0 {
+		t.Fatal("truncated SQL stream committed partial database changes")
+	}
+	if _, err := truncated.Exec(ctx, "CREATE ROLE sparc_restore_restricted LOGIN PASSWORD '"+fixturePassword+"'"); err != nil {
+		t.Fatal("unable to create restricted local restore role")
+	}
+	if _, err := truncated.Exec(ctx, "GRANT CREATE ON DATABASE sparc_truncated_target TO sparc_restore_restricted"); err != nil {
+		t.Fatal("unable to grant restricted local schema creation")
+	}
+	restrictedConnection := connection("sparc_truncated_target")
+	restrictedConnection.User = "sparc_restore_restricted"
+	restrictedParams := fixture.params
+	restrictedParams.User, restrictedParams.Database = restrictedConnection.User, restrictedConnection.Database
+	restrictedDB, err := pgx.ConnectConfig(ctx, fixture.configForParams(t, fixture.caPath, restrictedParams))
+	if err != nil {
+		t.Fatal("restricted restore role cannot authenticate to the local target")
+	}
+	if err := restrictedDB.Close(ctx); err != nil {
+		t.Fatal("unable to close restricted-role preflight")
+	}
+	if err := restoreSchemaDataWith(ctx, fixtureCandidateRunner(fixture), restrictedConnection,
+		io.NopCloser(strings.NewReader("CREATE SCHEMA sparc_role_check;\n")), io.NopCloser(strings.NewReader("SELECT 1;\n")),
+		uint64(len("CREATE SCHEMA sparc_role_check;\n")), uint64(len("SELECT 1;\n"))); err == nil {
+		t.Fatal("restore continued without permission to set the scoped replication role")
+	}
+	if err := truncated.QueryRow(ctx, "SELECT to_regnamespace('sparc_role_check') IS NOT NULL").Scan(&appSchema); err != nil || appSchema {
+		t.Fatal("unsupported replication-role setting left schema changes behind")
+	}
+	t.Log("PASS: PG17 managed baseline rejects legacy full DDL; typed schema/data restore preserves migrations and trigger state, and rolls back late SQL/stream failures")
+}
+
+type failingSQLReader struct{ io.Reader }
+
+func (r failingSQLReader) Read(buffer []byte) (int, error) {
+	n, err := r.Reader.Read(buffer)
+	if err == io.EOF {
+		return 0, io.ErrUnexpectedEOF
+	}
+	return n, err
+}
+func (failingSQLReader) Close() error { return nil }
+
 func TestEncryptedCrossClusterRecovery(t *testing.T) {
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		t.Skip("bundled recovery proof targets macOS arm64")

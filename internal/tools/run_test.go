@@ -19,7 +19,7 @@ import (
 	"github.com/burggraf/sparc-cli/internal/platform"
 )
 
-const runTestTimeout = 10 * time.Second
+const runTestTimeout = 30 * time.Second
 
 var preparedRunFixture struct {
 	once                             sync.Once
@@ -213,6 +213,91 @@ func TestRunConnectedInvocationUsesOnlyScopedPassfile(t *testing.T) {
 	}
 }
 
+func TestRunAtomicSQLRestoreUsesPSQLSingleTransactionAndBoundedInput(t *testing.T) {
+	manifest, packagePath, cacheRoot := preparedRunPayload(t)
+	input := &trackedRunInput{Reader: strings.NewReader("CREATE SCHEMA sparc_app;\\n")}
+	request := connectedRunRequestForTest(&memorySink{})
+	request.Tool, request.Mode = PSQL, ModeRestoreSQL
+	request.Input, request.InputLimit = input, uint64(len("CREATE SCHEMA sparc_app;\\n"))
+	if !validRunRequest(request) {
+		t.Fatal("atomic SQL restore request rejected")
+	}
+	args, err := runArguments(request)
+	want := []string{"-X", "--single-transaction", "--set=ON_ERROR_STOP=1", "--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db"}
+	if err != nil || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("atomic SQL restore args = %#v / %v; want fixed psql transaction args", args, err)
+	}
+	var received string
+	ops := runTestOps(func(spec platform.ProcessSpec) (ownedProcess, error) {
+		data, err := io.ReadAll(spec.Stdin)
+		received = string(data)
+		if err != nil {
+			return nil, err
+		}
+		return completedProcess(0), nil
+	})
+	result, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops)
+	if err != nil || result.ExitCode != 0 || received != "CREATE SCHEMA sparc_app;\\n" || input.closeCount() != 1 {
+		t.Fatalf("atomic SQL restore = %#v, %v, input=%q closes=%d", result, err, received, input.closeCount())
+	}
+}
+
+func TestRunAtomicSQLRestoreRejectsEarlyInputClose(t *testing.T) {
+	manifest, packagePath, cacheRoot := preparedRunPayload(t)
+	request := connectedRunRequestForTest(&memorySink{})
+	request.Tool, request.Mode = PSQL, ModeRestoreSQL
+	request.Input = io.NopCloser(strings.NewReader(strings.Repeat("x", runBufferBytes*2)))
+	request.InputLimit = runBufferBytes * 2
+	ops := runTestOps(func(platform.ProcessSpec) (ownedProcess, error) { return completedProcess(0), nil })
+	if _, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops); err != ErrRun {
+		t.Fatalf("atomic SQL restore accepted a child that closed stdin: %v", err)
+	}
+}
+
+func TestRunSchemaAndDataDumpsRequireExplicitTypedFilters(t *testing.T) {
+	request := connectedRunRequestForTest(&memorySink{})
+	request.Mode = ModeDumpSchema
+	request.DumpSchemas = []string{"sparc_app"}
+	if !validRunRequest(request) {
+		t.Fatal("schema-only dump request rejected")
+	}
+	args, err := runArguments(request)
+	want := []string{"--format=plain", "--schema-only", "--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db", "--schema=sparc_app"}
+	if err != nil || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("schema-only dump args = %#v / %v", args, err)
+	}
+
+	request.Mode = ModeDumpData
+	request.DumpSchemas = []string{"sparc_app", "auth", "storage"}
+	request.ExcludedTables = []TableRef{{Schema: "auth", Name: "schema_migrations"}, {Schema: "storage", Name: "migrations"}, {Schema: "supabase_functions", Name: "migrations"}, {Schema: "storage", Name: "buckets_vectors"}, {Schema: "storage", Name: "vector_indexes"}}
+	if !validRunRequest(request) {
+		t.Fatal("filtered data-only dump request rejected")
+	}
+	args, err = runArguments(request)
+	want = []string{"--format=plain", "--data-only", "--no-password", "--host=db.example", "--port=5432", "--username=backup user", "--dbname=project db", "--schema=sparc_app", "--schema=auth", "--schema=storage", "--exclude-table=auth.schema_migrations", "--exclude-table=storage.migrations", "--exclude-table=supabase_functions.migrations", "--exclude-table=storage.buckets_vectors", "--exclude-table=storage.vector_indexes"}
+	if err != nil || strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("filtered data-only dump args = %#v / %v", args, err)
+	}
+
+	for _, invalid := range []RunRequest{
+		{Tool: PGDump, Mode: ModeDumpSchema, Connection: request.Connection, DumpSchemas: nil, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PGDump, Mode: ModeDumpSchema, Connection: request.Connection, DumpSchemas: []string{"public.*"}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PGDump, Mode: ModeDumpSchema, Connection: request.Connection, DumpSchemas: []string{"auth"}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PGDump, Mode: ModeDumpSchema, Connection: request.Connection, DumpSchemas: []string{"AUTH"}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+
+		{Tool: PGDump, Mode: ModeDumpData, Connection: request.Connection, DumpSchemas: []string{"auth", "auth"}, ExcludedTables: request.ExcludedTables, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PGDump, Mode: ModeDumpData, Connection: request.Connection, DumpSchemas: []string{"cron"}, ExcludedTables: request.ExcludedTables, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PGDump, Mode: ModeDumpData, Connection: request.Connection, DumpSchemas: []string{"auth"}, ExcludedTables: []TableRef{{Schema: "auth", Name: "users;DROP"}}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+		{Tool: PGDump, Mode: ModeDumpData, Connection: request.Connection, DumpSchemas: []string{"auth"}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+
+		{Tool: PGRestore, Mode: ModeDumpData, Connection: request.Connection, DumpSchemas: []string{"auth"}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1, StderrLimit: 1, Stdout: &memorySink{}},
+	} {
+		if validRunRequest(invalid) {
+			t.Fatalf("accepted invalid schema/data dump request: %+v", invalid)
+		}
+	}
+}
+
 func TestRunRestoreArgumentsRequireTypedRestoreMode(t *testing.T) {
 	request := connectedRunRequestForTest(&memorySink{})
 	request.Mode = ModeRestore
@@ -263,6 +348,7 @@ func TestRunRestoreStreamsBoundedInputAndClosesIt(t *testing.T) {
 	}{
 		{"exact limit", "synthetic-custom-archive", uint64(len("synthetic-custom-archive")), "synthetic-custom-archive", nil},
 		{"one byte over", "synthetic-custom-archive!", uint64(len("synthetic-custom-archive")), "synthetic-custom-archive", ErrRun},
+		{"truncated before declared length", "synthetic-custom-archive", uint64(len("synthetic-custom-archive")) + 1, "synthetic-custom-archive", ErrRun},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			manifest, packagePath, cacheRoot := preparedRunPayload(t)
@@ -273,11 +359,11 @@ func TestRunRestoreStreamsBoundedInputAndClosesIt(t *testing.T) {
 			request.Connection.Password = []byte("secret-canary")
 			var received string
 			ops := runTestOps(func(spec platform.ProcessSpec) (ownedProcess, error) {
-				data, err := io.ReadAll(spec.Stdin)
-				received = string(data)
-				if err != nil {
+				data := make([]byte, len(test.wantInput))
+				if _, err := io.ReadFull(spec.Stdin, data); err != nil {
 					return nil, err
 				}
+				received = string(data)
 				return completedProcess(0), nil
 			})
 			result, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops)
@@ -297,8 +383,7 @@ func TestRunRestorePropagatesInputReadFailure(t *testing.T) {
 	request := connectedRunRequestForTest(&memorySink{})
 	request.Tool, request.Mode = PGRestore, ModeRestore
 	request.Input, request.InputLimit = input, 1024
-	ops := runTestOps(func(spec platform.ProcessSpec) (ownedProcess, error) {
-		_, _ = io.ReadAll(spec.Stdin)
+	ops := runTestOps(func(platform.ProcessSpec) (ownedProcess, error) {
 		return completedProcess(0), nil
 	})
 	result, err := runWith(context.Background(), request, manifest, packagePath, cacheRoot, ops)
@@ -1267,11 +1352,11 @@ func preparedRunPayload(t *testing.T) (packageManifest, string, string) {
 }
 
 func validRunRequestForTest(sink OutputSink) RunRequest {
-	return RunRequest{Tool: PSQL, Mode: ModeVersion, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
+	return RunRequest{Tool: PSQL, Mode: ModeVersion, Timeout: runTestTimeout, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
 }
 
 func connectedRunRequestForTest(sink OutputSink) RunRequest {
-	return RunRequest{Tool: PGDump, Mode: ModeDump, Connection: &PGConnection{Host: "db.example", Port: 5432, User: "backup user", Database: "project db", Password: []byte("secret-canary"), RootCertPEM: testRootCertPEM()}, Timeout: time.Second, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
+	return RunRequest{Tool: PGDump, Mode: ModeDump, Connection: &PGConnection{Host: "db.example", Port: 5432, User: "backup user", Database: "project db", Password: []byte("secret-canary"), RootCertPEM: testRootCertPEM()}, Timeout: runTestTimeout, CleanupTimeout: time.Second, StdoutLimit: 1 << 20, StderrLimit: 1 << 20, Stdout: sink}
 }
 
 func testRootCertPEM() []byte {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +71,105 @@ func restoreWith(ctx context.Context, request RestoreRequest, ops recoveryOps) e
 		return ErrRestore
 	}
 	return nil
+}
+
+const restoreReplicationRole = "\nSET LOCAL session_replication_role = replica;\n"
+
+func restoreSchemaDataWith(ctx context.Context, run func(context.Context, tools.RunRequest) (tools.RunResult, error), connection *tools.PGConnection, schema, data io.ReadCloser, schemaLength, dataLength uint64) error {
+	maxBytes := uint64(archive.MaxComponentBytes)
+	prefixLength := uint64(len(restoreReplicationRole))
+	if ctx == nil || run == nil || connection == nil || schema == nil || data == nil || schemaLength == 0 || dataLength == 0 || schemaLength > maxBytes-prefixLength || dataLength > maxBytes-prefixLength-schemaLength {
+		_ = closeRestoreSQLInputs(schema, data)
+		return ErrRestore
+	}
+	input := &restoreSQLInput{
+		Reader: io.MultiReader(
+			&exactRestoreReader{source: schema, remaining: schemaLength},
+			strings.NewReader(restoreReplicationRole),
+			&exactRestoreReader{source: data, remaining: dataLength},
+		),
+		schema: schema, data: data,
+	}
+	result, err := run(ctx, tools.RunRequest{
+		Tool: tools.PSQL, Mode: tools.ModeRestoreSQL, Connection: connection,
+		Input: input, InputLimit: schemaLength + prefixLength + dataLength,
+		Timeout: databaseToolTimeout, CleanupTimeout: 5 * time.Second,
+		StdoutLimit: maxToolStderrBytes, StderrLimit: maxToolStderrBytes, Stdout: discardToolOutput{},
+	})
+	closeErr := input.Close()
+	if err != nil || result.ExitCode != 0 || closeErr != nil {
+		return ErrRestore
+	}
+	return nil
+}
+
+type restoreSQLInput struct {
+	io.Reader
+	schema, data io.ReadCloser
+	once         sync.Once
+	err          error
+}
+
+func (r *restoreSQLInput) Close() error {
+	r.once.Do(func() { r.err = closeRestoreSQLInputs(r.schema, r.data) })
+	return r.err
+}
+
+func closeRestoreSQLInputs(schema, data io.ReadCloser) error {
+	failed := false
+	if schema != nil && schema.Close() != nil {
+		failed = true
+	}
+	if data != nil && data.Close() != nil {
+		failed = true
+	}
+	if failed {
+		return ErrRestore
+	}
+	return nil
+}
+
+type exactRestoreReader struct {
+	source    io.Reader
+	remaining uint64
+	done      bool
+}
+
+func (r *exactRestoreReader) Read(buffer []byte) (int, error) {
+	if len(buffer) == 0 {
+		return 0, nil
+	}
+	if r.done {
+		return 0, io.EOF
+	}
+	if r.remaining == 0 {
+		var probe [1]byte
+		n, err := r.source.Read(probe[:])
+		if n != 0 || err != io.EOF {
+			r.done = true
+			return 0, io.ErrUnexpectedEOF
+		}
+		r.done = true
+		return 0, io.EOF
+	}
+	if uint64(len(buffer)) > r.remaining {
+		buffer = buffer[:int(r.remaining)]
+	}
+	n, err := r.source.Read(buffer)
+	if n < 0 || n > len(buffer) {
+		r.done = true
+		return 0, io.ErrUnexpectedEOF
+	}
+	r.remaining -= uint64(n)
+	if err != nil {
+		if err == io.EOF && r.remaining == 0 {
+			r.done = true
+			return n, nil
+		}
+		r.done = true
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, nil
 }
 
 func openDatabaseDump(dir string, component archive.Component, passphrase string) (io.ReadCloser, error) {
