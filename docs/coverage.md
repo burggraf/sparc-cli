@@ -123,7 +123,9 @@ client is required. The component is always marked `incomplete`: the inventory
 table above remains the support contract.
 The dump is a full single-database `pg_dump`, so it may contain database objects
 from Supabase-managed schemas such as `auth` and `storage`; their completeness and
-recovery are not qualified. It does not capture Storage object bytes, project-level
+recovery are not qualified. [R17](research/R17-supabase-cli-dump-profile.md)
+pins the upstream CLI v2.117.0's separate schema/data/role selection and the
+proposed replacement profile; neither is implemented by the current backup. It does not capture Storage object bytes, project-level
 configuration, cluster roles/globals, Functions, or other provider-managed
 services. It has no remote destination or restore command. Other platform client
 payloads are not bundled.

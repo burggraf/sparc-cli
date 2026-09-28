@@ -83,3 +83,10 @@ Source-mutation detection, resumable journals, remote destinations, a public
 unpack or offline-verify command, PostgreSQL payload provenance, and Supabase
 compatibility remain unimplemented. A production payload inventory remains
 empty.
+
+The [R17 Supabase-aware database profile](research/R17-supabase-cli-dump-profile.md)
+proposes a separate, versioned encrypted `database/recovery-profile.json` payload
+inside the **existing** v1 container, which already supports multiple components.
+This profile and split capture are not implemented. Existing one-component
+`database/postgresql.dump` archives retain their original incomplete meaning;
+no manifest fields or decryption behavior have changed.
