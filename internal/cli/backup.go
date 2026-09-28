@@ -21,9 +21,10 @@ bundled in the macOS arm64 application. No separate PostgreSQL installation is
 required. Relative paths are resolved from the current directory. FILE must be
 readable; DIR must be new beneath an existing writable local directory. The
 database URL is read only from FILE; it is never accepted in argv. A prompted
-archive passphrase must be entered twice. The archive is marked incomplete:
-Auth, Storage, project configuration, roles, and provider-managed services are
-not included.
+archive passphrase must be entered twice. The archive is marked incomplete: it includes selected public schema DDL and
+public/Auth/Storage table data, but not non-public application schemas,
+Auth/Storage schema definitions, custom roles, Storage object bytes, project
+configuration, or provider-managed services.
 `
 
 type backupOps struct {
@@ -34,7 +35,7 @@ type backupOps struct {
 
 func runBackup(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return runBackupWith(args, stdin, stdout, stderr, backupOps{
-		input: credentials.Input, parse: database.ParseSupavisorSessionURL, capture: database.Capture,
+		input: credentials.Input, parse: database.ParseSupavisorSessionURL, capture: database.CaptureSplit,
 	})
 }
 

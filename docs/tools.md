@@ -1,6 +1,6 @@
 # Trusted tools and bounded execution
 
-Task 05 provides the trusted payload-cache and process-runner mechanisms. Task 11 adds typed database stream operations and internal encrypted `Capture`/`Restore` APIs. The normal CLI now wires `sparc backup` to capture one intentionally incomplete PostgreSQL database component. Its macOS arm64 build embeds a PostgreSQL 17.11 client/runtime payload; other platforms have no client bundle. This is not full Supabase coverage or hosted recovery qualification. See [credential boundaries](credentials.md) for private-storage and passfile input/cleanup limits.
+Task 05 provides the trusted payload-cache and process-runner mechanisms. Task 11 adds typed database stream operations and internal encrypted `Capture`/`Restore` APIs. The normal CLI now wires `sparc backup` to capture separate encrypted schema/data components plus a versioned, intentionally incomplete database recovery profile. Its macOS arm64 build embeds a PostgreSQL 17.11 client/runtime payload; other platforms have no client bundle. This is not full Supabase coverage or hosted recovery qualification. See [credential boundaries](credentials.md) for private-storage and passfile input/cleanup limits.
 
 ## Runner boundary
 

@@ -115,19 +115,25 @@ interrupted archive must not appear finalized.
 
 ## Current executable database slice
 
-`sparc backup` can create one encrypted local PostgreSQL custom-format component
-from a qualified Supavisor session-pooler route on macOS arm64. PostgreSQL
-17.11 `pg_dump`, libpq, and the OpenSSL runtime are embedded in the executable
-and privately extracted/validated by SPARC; no separately installed PostgreSQL
-client is required. The component is always marked `incomplete`: the inventory
-table above remains the support contract.
-The dump is a full single-database `pg_dump`, so it may contain database objects
-from Supabase-managed schemas such as `auth` and `storage`; their completeness and
-recovery are not qualified. [R17](research/R17-supabase-cli-dump-profile.md)
-pins the upstream CLI v2.117.0's separate schema/data/role selection and the
-proposed replacement profile; neither is implemented by the current backup. It does not capture Storage object bytes, project-level
-configuration, cluster roles/globals, Functions, or other provider-managed
-services. It has no remote destination or restore command. Other platform client
-payloads are not bundled.
-A successful command is therefore exit `3`
+`sparc backup` creates three separately encrypted archive-v1 components from a
+qualified Supavisor session-pooler route on macOS arm64: schema-only SQL for
+`public`, data-only SQL selected from `public`, `auth`, and `storage`, plus a
+version-1 `database/recovery-profile.json`. PostgreSQL 17.11 `pg_dump`, libpq,
+and the OpenSSL runtime are embedded in the executable and privately
+extracted/validated by SPARC; no separately installed PostgreSQL client is
+required. The schema/data components are marked `incomplete`, and the profile
+records exact selectors/exclusions, source/client PostgreSQL versions, extension
+inventory, missing custom roles, and unqualified source-snapshot consistency.
+
+This is a narrow first capture, not a recovery claim. Non-public application
+schemas are not inventoried; Auth/Storage managed DDL and customizations,
+custom roles/ownership, a common schema/data snapshot, archive-derived fidelity,
+Auth/Storage service behavior, and restore compatibility remain unqualified.
+Auth/Storage table data is included except fixed migration/vector exclusions;
+Storage object bytes, project-level configuration, cluster roles/globals,
+Functions, and other provider-managed services are not captured. The internal
+restore path still accepts only the legacy one-component archive, and public
+`sparc restore` is unavailable. Existing `database/postgresql.dump` archives
+such as `./tmp/test` keep their original incomplete meaning. Other platform
+client payloads are not bundled. A successful command therefore exits `3`
 (intact archive with incomplete declared coverage), not full-project success.

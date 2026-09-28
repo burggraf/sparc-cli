@@ -5,6 +5,7 @@ package database
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -434,6 +435,89 @@ func TestSupabaseManagedBaselineSplitRestoreIsAtomic(t *testing.T) {
 		t.Fatal("unsupported replication-role setting left schema changes behind")
 	}
 	t.Log("PASS: PG17 managed baseline rejects legacy full DDL; typed schema/data restore preserves migrations and trigger state, and rolls back late SQL/stream failures")
+}
+
+func TestSplitCaptureUsesPinnedSelectionsAndEncryptedProfile(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("bundled recovery capture proof targets macOS arm64")
+	}
+	fixture := newPostgresFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	params := fixture.params
+	params.User = "postgres"
+	source, err := pgx.ConnectConfig(ctx, fixture.configForParams(t, fixture.caPath, params))
+	if err != nil {
+		t.Fatal("unable to connect to local capture source")
+	}
+	for _, statement := range []string{
+		"CREATE SCHEMA auth",
+		"CREATE TABLE auth.users (id integer PRIMARY KEY, email text NOT NULL)",
+		"INSERT INTO auth.users VALUES (17, 'auth-eligible-canary')",
+		"CREATE TABLE auth.schema_migrations (version text PRIMARY KEY)",
+		"INSERT INTO auth.schema_migrations VALUES ('auth-migration-excluded-canary')",
+		"CREATE SCHEMA storage",
+		"CREATE TABLE storage.objects (id integer PRIMARY KEY, name text NOT NULL)",
+		"INSERT INTO storage.objects VALUES (23, 'storage-eligible-canary')",
+		"CREATE TABLE storage.migrations (version text PRIMARY KEY)",
+		"INSERT INTO storage.migrations VALUES ('storage-migration-excluded-canary')",
+		"CREATE TABLE storage.buckets_vectors (id integer PRIMARY KEY, value text)",
+		"INSERT INTO storage.buckets_vectors VALUES (29, 'storage-vector-excluded-canary')",
+		"CREATE TABLE storage.vector_indexes (id integer PRIMARY KEY, value text)",
+		"INSERT INTO storage.vector_indexes VALUES (31, 'storage-index-excluded-canary')",
+		"CREATE TABLE public.sparc_public_items (id integer PRIMARY KEY, value text NOT NULL)",
+		"INSERT INTO public.sparc_public_items VALUES (37, 'public-eligible-canary')",
+	} {
+		if _, err := source.Exec(ctx, statement); err != nil {
+			t.Fatal("unable to seed local split-capture fixture")
+		}
+	}
+	if err := source.Close(ctx); err != nil {
+		t.Fatal("unable to close local split-capture source")
+	}
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal("unable to resolve encrypted capture parent")
+	}
+	parent := filepath.Join(root, "private")
+	if err := platform.CreatePrivateDir(parent); err != nil {
+		t.Fatal("unable to create private encrypted capture parent")
+	}
+	const passphrase = "synthetic-split-capture-passphrase"
+	ops := defaultRecoveryOps()
+	ops.observe = fixtureRecoveryObserver(t, fixture)
+	ops.run = fixtureCandidateRunner(fixture)
+	manifest, err := captureSplitWith(ctx, CaptureRequest{
+		Source: params, SourcePassword: []byte(fixturePassword), ArchivePath: filepath.Join(parent, "split"), ArchivePassphrase: passphrase,
+	}, ops)
+	if err != nil || !validSplitCaptureManifest(manifest) {
+		t.Fatal("encrypted split capture failed")
+	}
+	if _, err := archive.Verify(filepath.Join(parent, "split"), passphrase); err != nil {
+		t.Fatal("split capture failed offline archive verification")
+	}
+	schemaSQL := readEncryptedTestComponent(t, filepath.Join(parent, "split"), manifest.Components[0], passphrase)
+	dataSQL := readEncryptedTestComponent(t, filepath.Join(parent, "split"), manifest.Components[1], passphrase)
+	profileBytes := readEncryptedTestComponent(t, filepath.Join(parent, "split"), manifest.Components[2], passphrase)
+	if !bytes.Contains(schemaSQL, []byte("CREATE TABLE public.sparc_public_items")) || bytes.Contains(schemaSQL, []byte("CREATE TABLE auth.users")) || bytes.Contains(schemaSQL, []byte("CREATE TABLE storage.objects")) {
+		t.Fatal("schema component did not follow the pinned public-only DDL selection")
+	}
+	for _, included := range [][]byte{[]byte("auth-eligible-canary"), []byte("storage-eligible-canary"), []byte("public-eligible-canary")} {
+		if !bytes.Contains(dataSQL, included) {
+			t.Fatal("data component omitted eligible public/Auth/Storage rows")
+		}
+	}
+	for _, excluded := range [][]byte{[]byte("auth-migration-excluded-canary"), []byte("storage-migration-excluded-canary"), []byte("storage-vector-excluded-canary"), []byte("storage-index-excluded-canary")} {
+		if bytes.Contains(dataSQL, excluded) {
+			t.Fatal("data component included a fixed migration or vector exclusion")
+		}
+	}
+	var profile RecoveryProfileV1
+	if err := json.Unmarshal(profileBytes, &profile); err != nil || profile.CaptureStatus != "incomplete" || profile.Snapshot.Status != "unqualified" || profile.Roles.Status != "missing" {
+		t.Fatal("split archive lacks its versioned incomplete recovery profile")
+	}
+	t.Log("PASS: split SQL streams are encrypted, Auth/Storage eligible rows are included, and fixed managed data exclusions plus incomplete scope are declared")
 }
 
 type failingSQLReader struct{ io.Reader }

@@ -2,7 +2,7 @@
 
 SPARC (Supabase Project ARChiver) is a Go CLI for encrypted Supabase database backups. Full-project recovery is not yet supported.
 
-> **Current usable slice:** On macOS arm64, `sparc backup` creates an encrypted local PostgreSQL database archive using its bundled PostgreSQL 17.11 client; no separate PostgreSQL or OpenSSL installation is needed. The archive is deliberately marked incomplete. It is a full single-database `pg_dump`, so some database objects in Supabase-managed schemas may be present; their recovery is not qualified. It does not include Storage object bytes, project-level settings, cluster roles/globals, or other provider-managed services. `restore` remains unavailable, and other platform payloads are not yet bundled.
+> **Current usable slice:** On macOS arm64, `sparc backup` creates three separately encrypted archive-v1 components: schema-only SQL for `public`, data-only SQL for `public`/`auth`/`storage`, and a versioned incomplete recovery profile. PostgreSQL 17.11 is bundled; no separate PostgreSQL or OpenSSL installation is needed. The profile records fixed exclusions, extension inventory, and missing/unknown recovery scope. Non-public application schemas, managed Auth/Storage DDL, custom roles, a shared source snapshot, archive-derived fidelity, Storage object bytes, project settings, and provider services remain unqualified. `restore` remains unavailable, and other platform payloads are not yet bundled.
 
 ## Commands
 
@@ -30,12 +30,12 @@ ARCHIVE="./backups/database-$(date +%Y%m%d-%H%M%S)"
   --archive "$ARCHIVE"
 ```
 
-The command prompts twice for an archive-encryption passphrase without echo unless you add `--passphrase-file .passphrase`. It prints `Database archive created.` and exits **3**, meaning the encrypted archive is intact but deliberately incomplete. Run `./sparc verify --archive "$ARCHIVE"` with the same passphrase to verify it offline. A hosted backup reads database contents and needs the operator's authorization. Remote folders are not supported yet. Run `./sparc licenses` to print the bundled PostgreSQL and OpenSSL notices.
+The command prompts twice for an archive-encryption passphrase without echo unless you add `--passphrase-file .passphrase`. It prints `Database archive created.` and exits **3**, meaning the encrypted archive is intact but deliberately incomplete. Eligible Auth/Storage table rows are included; fixed migration and Storage vector tables are excluded. The profile states that custom roles, non-public application schemas, common snapshot consistency, and several service-level requirements are missing or unqualified. Run `./sparc verify --archive "$ARCHIVE"` with the same passphrase to verify it offline. A hosted backup reads database contents and needs the operator's authorization. Remote folders are not supported yet. Run `./sparc licenses` to print the bundled PostgreSQL and OpenSSL notices.
 
-## Rehearse restoring an existing archive locally
+## Rehearse restoring a legacy archive locally
 
-Homebrew PostgreSQL 17 server tools can test whether a SPARC database component
-restores on this Mac. The Homebrew service need not be running: this developer-only
+Homebrew PostgreSQL 17 server tools can test whether a legacy custom-format SPARC database component such as `./tmp/test`
+restores on this Mac. Split-profile archives are not yet accepted by this developer-only restore path. The Homebrew service need not be running: this developer-only
 command starts a fresh temporary cluster on a private Unix socket, verifies the
 archive, restores into a new database, checks the catalog is readable, and stops
 and removes the cluster. It does **not** alter an existing PostgreSQL service,

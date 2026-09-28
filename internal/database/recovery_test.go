@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/burggraf/sparc-cli/internal/archive"
+	"github.com/burggraf/sparc-cli/internal/destination"
 	"github.com/burggraf/sparc-cli/internal/platform"
 	"github.com/burggraf/sparc-cli/internal/tools"
 )
@@ -149,6 +151,134 @@ func TestCaptureStreamsOneIncompleteDatabaseComponent(t *testing.T) {
 	}
 	if len(manifest.Components) != 1 || manifest.Components[0].Key != databaseDumpKey || manifest.Components[0].Status != "incomplete" {
 		t.Fatalf("capture manifest = %#v", manifest)
+	}
+}
+
+func TestCaptureSplitPublishesTwoEncryptedSQLComponentsAndProfile(t *testing.T) {
+	request := captureTestRequest(t)
+	ops := recoveryTestOps()
+	ops.create = destination.Create
+	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
+		return CatalogObservation{
+			ServerVersionNum: 170009, ServerMajor: 17, TLS: true, ReadOnly: true,
+			Schemas:    []SchemaObservation{{Name: "public", Present: true}, {Name: "auth", Present: true}, {Name: "storage", Present: true}},
+			Extensions: []ExtensionObservation{{Name: "postgis", Version: "3.5.2", Schema: "extensions"}},
+		}, nil
+	}
+	var calls int
+	ops.run = func(ctx context.Context, request tools.RunRequest) (tools.RunResult, error) {
+		calls++
+		if request.Tool != tools.PGDump || request.Connection == nil || request.Connection.Host != "db.abcdefghijklmnopqrst.supabase.co" || string(request.Connection.RootCertPEM) != "synthetic-root" {
+			t.Fatalf("split dump request = %#v", request)
+		}
+		var payload string
+		switch request.Mode {
+		case tools.ModeDumpSchema:
+			if !equalStrings(request.DumpSchemas, []string{"public"}) || len(request.ExcludedTables) != 0 {
+				t.Fatalf("schema dump selection = %#v %#v", request.DumpSchemas, request.ExcludedTables)
+			}
+			payload = "CREATE TABLE public.synthetic_items (id integer);\n"
+		case tools.ModeDumpData:
+			if !equalStrings(request.DumpSchemas, []string{"public", "auth", "storage"}) || !hasRequiredRecoveryExclusions(request.ExcludedTables) {
+				t.Fatalf("data dump selection = %#v %#v", request.DumpSchemas, request.ExcludedTables)
+			}
+			payload = "COPY auth.users (id) FROM stdin;\n17\n\\.\n"
+		default:
+			t.Fatalf("unexpected dump mode %v", request.Mode)
+		}
+		written, err := request.Stdout.WriteContext(ctx, []byte(payload))
+		closeErr := request.Stdout.CloseContext(ctx)
+		if err != nil || closeErr != nil || written != len(payload) {
+			return tools.RunResult{}, tools.ErrOutput
+		}
+		return tools.RunResult{ExitCode: 0, StdoutBytes: uint64(written)}, nil
+	}
+
+	manifest, err := captureSplitWith(context.Background(), request, ops)
+	if err != nil {
+		t.Fatalf("split capture failed: %v", err)
+	}
+	if calls != 2 || len(manifest.Components) != 3 || manifest.Components[0].Key != "database/schema.sql" || manifest.Components[1].Key != "database/data.sql" || manifest.Components[2].Key != recoveryProfileKey {
+		t.Fatalf("split capture manifest = %#v, calls=%d", manifest, calls)
+	}
+	verified, err := archive.Verify(request.ArchivePath, request.ArchivePassphrase)
+	if err != nil || len(verified.Components) != 3 {
+		t.Fatalf("split archive verification = %#v, %v", verified, err)
+	}
+	components := make([][]byte, len(manifest.Components))
+	for index, component := range manifest.Components {
+		components[index] = readEncryptedTestComponent(t, request.ArchivePath, component, request.ArchivePassphrase)
+	}
+	if string(components[0]) != "CREATE TABLE public.synthetic_items (id integer);\n" || !strings.Contains(string(components[1]), "COPY auth.users") {
+		t.Fatalf("split SQL components = %q / %q", components[0], components[1])
+	}
+	var profile RecoveryProfileV1
+	if err := json.Unmarshal(components[2], &profile); err != nil {
+		t.Fatalf("recovery profile is not JSON: %v", err)
+	}
+	if profile.Format != recoveryProfileFormat || profile.Version != 1 || profile.CaptureStatus != "incomplete" || profile.SourcePostgresMajor != 17 || profile.SourceVersionNum != 170009 || profile.ClientVersion != "PostgreSQL 17.11" || profile.SchemaDump.Key != "database/schema.sql" || profile.DataDump.Key != "database/data.sql" || len(profile.Unknowns) == 0 || len(profile.Extensions) != 1 {
+		t.Fatalf("recovery profile = %#v", profile)
+	}
+	if strings.Contains(string(components[2]), "synthetic-db-password") || strings.Contains(string(components[2]), "synthetic-root") || strings.Contains(string(components[2]), "abcdefghijklmnopqrst") {
+		t.Fatal("recovery profile disclosed source credentials or project identity")
+	}
+}
+
+func TestCaptureSplitRequiresManagedDataSchemasBeforeDump(t *testing.T) {
+	request := captureTestRequest(t)
+	ops := recoveryTestOps()
+	observed := false
+	var ran, published bool
+	ops.observe = func(_ context.Context, _ ConnectionParams, _ []byte, schemas []string) (CatalogObservation, error) {
+		observed = true
+		if !equalStrings(schemas, []string{"public", "auth", "storage"}) {
+			t.Fatalf("source schema preflight = %#v", schemas)
+		}
+		return CatalogObservation{
+			ServerVersionNum: 170009, ServerMajor: 17, TLS: true, ReadOnly: true,
+			Schemas: []SchemaObservation{{Name: "public", Present: true}, {Name: "auth", Present: true}},
+		}, nil
+	}
+	ops.run = func(context.Context, tools.RunRequest) (tools.RunResult, error) {
+		ran = true
+		return tools.RunResult{}, nil
+	}
+	ops.create = func(string, []archive.Input, string) (archive.Manifest, error) {
+		published = true
+		return archive.Manifest{}, nil
+	}
+	if _, err := captureSplitWith(context.Background(), request, ops); err != ErrCapture || !observed || ran || published {
+		t.Fatalf("missing source schema preflight = err %v, observed=%t ran=%t published=%t", err, observed, ran, published)
+	}
+}
+
+func TestCaptureSplitDataFailureLeavesNoPublishedArchive(t *testing.T) {
+	request := captureTestRequest(t)
+	ops := recoveryTestOps()
+	ops.create = destination.Create
+	ops.observe = func(context.Context, ConnectionParams, []byte, []string) (CatalogObservation, error) {
+		return CatalogObservation{ServerVersionNum: 170009, ServerMajor: 17, TLS: true, ReadOnly: true, Schemas: []SchemaObservation{{Name: "public", Present: true}, {Name: "auth", Present: true}, {Name: "storage", Present: true}}}, nil
+	}
+	calls := 0
+	ops.run = func(ctx context.Context, request tools.RunRequest) (tools.RunResult, error) {
+		calls++
+		if request.Mode == tools.ModeDumpSchema {
+			_, _ = request.Stdout.WriteContext(ctx, []byte("CREATE TABLE public.synthetic_items (id integer);\n"))
+			_ = request.Stdout.CloseContext(ctx)
+			return tools.RunResult{ExitCode: 0}, nil
+		}
+		_, _ = request.Stdout.WriteContext(ctx, []byte("partial SQL"))
+		return tools.RunResult{}, tools.ErrRun
+	}
+	if _, err := captureSplitWith(context.Background(), request, ops); err != ErrCapture || calls != 2 {
+		t.Fatalf("split failure = %v, calls=%d", err, calls)
+	}
+	if _, err := os.Lstat(request.ArchivePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed split capture published an archive: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(request.ArchivePath))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("failed split capture left staging files: entries=%v err=%v", entries, err)
 	}
 }
 
@@ -427,6 +557,49 @@ type recoveryTestInput struct {
 }
 
 func (r *recoveryTestInput) Close() error { r.closed = true; return nil }
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func hasRequiredRecoveryExclusions(tables []tools.TableRef) bool {
+	want := recoveryDataExclusions()
+	if len(tables) != len(want) {
+		return false
+	}
+	for index := range want {
+		if tables[index] != want[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func readEncryptedTestComponent(t *testing.T, archivePath string, component archive.Component, passphrase string) []byte {
+	t.Helper()
+	file, err := os.Open(filepath.Join(archivePath, component.ID+".age"))
+	if err != nil {
+		t.Fatal("unable to open test archive component")
+	}
+	defer file.Close()
+	reader, err := archive.Decrypt(file, passphrase)
+	if err != nil {
+		t.Fatal("unable to decrypt test archive component")
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, component.Length+1))
+	if err != nil || int64(len(data)) != component.Length {
+		t.Fatal("test archive component did not match its declared length")
+	}
+	return data
+}
 
 func captureTestRequest(t *testing.T) CaptureRequest {
 	t.Helper()

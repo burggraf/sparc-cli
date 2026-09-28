@@ -1,8 +1,10 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -17,11 +19,18 @@ import (
 )
 
 const (
-	databaseDumpKey     = "database/postgresql.dump"
-	databaseDumpScope   = "one full PostgreSQL database; cluster globals and provider-managed services are excluded"
-	databaseToolTimeout = 6 * time.Hour
-	maxToolStderrBytes  = 1 << 20
-	maxNativeRootBytes  = 1 << 20
+	databaseDumpKey       = "database/postgresql.dump"
+	databaseDumpScope     = "one full PostgreSQL database; cluster globals and provider-managed services are excluded"
+	schemaSQLKey          = "database/schema.sql"
+	dataSQLKey            = "database/data.sql"
+	recoveryProfileKey    = "database/recovery-profile.json"
+	recoveryProfileFormat = "sparc-recovery-profile"
+	schemaSQLScope        = "application schema DDL for public only; managed schema DDL excluded"
+	dataSQLScope          = "public, Auth, and Storage table data with fixed exclusions"
+	recoveryProfileScope  = "versioned database capture profile; completeness limitations declared"
+	databaseToolTimeout   = 6 * time.Hour
+	maxToolStderrBytes    = 1 << 20
+	maxNativeRootBytes    = 1 << 20
 )
 
 var ErrCapture = errors.New("database capture failed")
@@ -45,24 +54,59 @@ type recoveryOps struct {
 	open        func(string, archive.Component, string) (io.ReadCloser, error)
 }
 
-// Capture observes the source read-only, then streams one incomplete custom-format
-// database component through the encrypted local archive publisher.
+// Capture retains the legacy one-component custom-format database capture.
 func Capture(ctx context.Context, request CaptureRequest) (archive.Manifest, error) {
 	return captureWith(ctx, request, defaultRecoveryOps())
 }
 
+// CaptureSplit writes the current versioned, deliberately incomplete recovery profile.
+func CaptureSplit(ctx context.Context, request CaptureRequest) (archive.Manifest, error) {
+	return captureSplitWith(ctx, request, defaultRecoveryOps())
+}
+
+type RecoveryProfileV1 struct {
+	Format              string                     `json:"format"`
+	Version             int                        `json:"version"`
+	CaptureStatus       string                     `json:"capture_status"`
+	SourcePostgresMajor int                        `json:"source_postgres_major"`
+	SourceVersionNum    int                        `json:"source_version_num"`
+	ClientVersion       string                     `json:"client_version"`
+	SchemaDump          recoveryDumpProfile        `json:"schema_dump"`
+	DataDump            recoveryDumpProfile        `json:"data_dump"`
+	ExcludedTables      []recoveryProfileTable     `json:"excluded_tables"`
+	Extensions          []recoveryProfileExtension `json:"extensions"`
+	Roles               recoveryCoverageProfile    `json:"roles"`
+	Snapshot            recoveryCoverageProfile    `json:"snapshot_consistency"`
+	Unknowns            []string                   `json:"unknowns"`
+}
+
+type recoveryDumpProfile struct {
+	Key     string   `json:"key"`
+	Mode    string   `json:"mode"`
+	Schemas []string `json:"schemas"`
+	Status  string   `json:"status"`
+}
+
+type recoveryProfileTable struct {
+	Schema string `json:"schema"`
+	Name   string `json:"name"`
+}
+
+type recoveryProfileExtension struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Schema  string `json:"schema"`
+}
+
+type recoveryCoverageProfile struct {
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+}
+
 func captureWith(ctx context.Context, request CaptureRequest, ops recoveryOps) (archive.Manifest, error) {
-	if ctx == nil || !validRecoveryConnection(request.Source, request.SourcePassword) || !validRecoveryArchivePath(request.ArchivePath) || archive.ValidatePassphrase(request.ArchivePassphrase) != nil ||
-		ops.rootCert == nil || ops.observe == nil || ops.prepareTool == nil || ops.run == nil || ops.create == nil || ops.prepareTool(ctx, tools.PGDump) != nil {
-		return archive.Manifest{}, ErrCapture
-	}
-	rootCert, err := ops.rootCert(request.Source)
-	if err != nil || len(rootCert) == 0 || len(rootCert) > maxNativeRootBytes {
-		return archive.Manifest{}, ErrCapture
-	}
-	observation, err := ops.observe(ctx, request.Source, request.SourcePassword, nil)
-	if err != nil || observation.ServerMajor != supportedPostgresMajor || !observation.TLS || !observation.ReadOnly {
-		return archive.Manifest{}, ErrCapture
+	rootCert, _, err := prepareCapture(ctx, request, ops, nil)
+	if err != nil {
+		return archive.Manifest{}, err
 	}
 
 	reader, writer := io.Pipe()
@@ -102,6 +146,154 @@ func captureWith(ctx context.Context, request CaptureRequest, ops recoveryOps) (
 		return archive.Manifest{}, ErrCapture
 	}
 	return archived.manifest, nil
+}
+
+func captureSplitWith(ctx context.Context, request CaptureRequest, ops recoveryOps) (archive.Manifest, error) {
+	rootCert, observation, err := prepareCapture(ctx, request, ops, []string{"public", "auth", "storage"})
+	if err != nil || observation.ServerVersionNum < 170000 || observation.ServerVersionNum >= 180000 {
+		return archive.Manifest{}, ErrCapture
+	}
+	profile, err := json.Marshal(makeRecoveryProfile(observation))
+	if err != nil {
+		return archive.Manifest{}, ErrCapture
+	}
+	schemaReader, schemaWriter := io.Pipe()
+	dataReader, dataWriter := io.Pipe()
+	schemaSink, dataSink := &archivePipeSink{writer: schemaWriter}, &archivePipeSink{writer: dataWriter}
+	archiveResult := make(chan archiveWriteResult, 1)
+	go func() {
+		defer schemaReader.Close()
+		defer dataReader.Close()
+		manifest, err := ops.create(request.ArchivePath, []archive.Input{
+			{Key: schemaSQLKey, Scope: schemaSQLScope, Status: "incomplete", Source: schemaReader},
+			{Key: dataSQLKey, Scope: dataSQLScope, Status: "incomplete", Source: dataReader},
+			{Key: recoveryProfileKey, Scope: recoveryProfileScope, Status: "complete", Source: bytes.NewReader(profile)},
+		}, request.ArchivePassphrase)
+		archiveResult <- archiveWriteResult{manifest: manifest, err: err}
+	}()
+
+	runDump := func(mode tools.RunMode, schemas []string, exclusions []tools.TableRef, sink *archivePipeSink) (tools.RunResult, error) {
+		result, runErr := ops.run(ctx, tools.RunRequest{
+			Tool: tools.PGDump, Mode: mode, DumpSchemas: schemas, ExcludedTables: exclusions,
+			Connection: &tools.PGConnection{
+				Host: request.Source.Host, Port: request.Source.Port, User: request.Source.User, Database: request.Source.Database,
+				Password: request.SourcePassword, RootCertPEM: rootCert,
+			},
+			Timeout: databaseToolTimeout, CleanupTimeout: 5 * time.Second,
+			StdoutLimit: uint64(archive.MaxComponentBytes), StderrLimit: maxToolStderrBytes, Stdout: sink,
+		})
+		if ctx.Err() != nil && runErr == nil {
+			runErr = tools.ErrRun
+		}
+		if runErr != nil || result.ExitCode != 0 {
+			_ = sink.AbortContext(context.Background())
+			return result, runErr
+		}
+		if sink.CloseContext(context.Background()) != nil {
+			return result, tools.ErrOutput
+		}
+		return result, nil
+	}
+
+	schemaResult, schemaErr := runDump(tools.ModeDumpSchema, []string{"public"}, nil, schemaSink)
+	var dataResult tools.RunResult
+	var dataErr error
+	if schemaErr != nil || schemaResult.ExitCode != 0 {
+		_ = schemaSink.AbortContext(context.Background())
+		_ = dataSink.AbortContext(context.Background())
+	} else {
+		dataResult, dataErr = runDump(tools.ModeDumpData, []string{"public", "auth", "storage"}, recoveryDataExclusions(), dataSink)
+		if dataErr != nil || dataResult.ExitCode != 0 {
+			_ = dataSink.AbortContext(context.Background())
+		}
+	}
+	archived := <-archiveResult
+	if errors.Is(schemaErr, tools.ErrPayloadUnavailable) || errors.Is(dataErr, tools.ErrPayloadUnavailable) {
+		return archive.Manifest{}, tools.ErrPayloadUnavailable
+	}
+	if schemaErr != nil || schemaResult.ExitCode != 0 || dataErr != nil || dataResult.ExitCode != 0 || archived.err != nil || !validSplitCaptureManifest(archived.manifest) {
+		return archive.Manifest{}, ErrCapture
+	}
+	return archived.manifest, nil
+}
+
+func prepareCapture(ctx context.Context, request CaptureRequest, ops recoveryOps, schemaNames []string) ([]byte, CatalogObservation, error) {
+	if ctx == nil || !validRecoveryConnection(request.Source, request.SourcePassword) || !validRecoveryArchivePath(request.ArchivePath) || archive.ValidatePassphrase(request.ArchivePassphrase) != nil ||
+		ops.rootCert == nil || ops.observe == nil || ops.prepareTool == nil || ops.run == nil || ops.create == nil || ops.prepareTool(ctx, tools.PGDump) != nil {
+		return nil, CatalogObservation{}, ErrCapture
+	}
+	rootCert, err := ops.rootCert(request.Source)
+	if err != nil || len(rootCert) == 0 || len(rootCert) > maxNativeRootBytes {
+		return nil, CatalogObservation{}, ErrCapture
+	}
+	observation, err := ops.observe(ctx, request.Source, request.SourcePassword, schemaNames)
+	if err != nil || observation.ServerMajor != supportedPostgresMajor || !observation.TLS || !observation.ReadOnly {
+		return nil, CatalogObservation{}, ErrCapture
+	}
+	if len(schemaNames) != len(observation.Schemas) {
+		return nil, CatalogObservation{}, ErrCapture
+	}
+	for index, name := range schemaNames {
+		if observation.Schemas[index].Name != name || !observation.Schemas[index].Present {
+			return nil, CatalogObservation{}, ErrCapture
+		}
+	}
+	return rootCert, observation, nil
+}
+
+func makeRecoveryProfile(observation CatalogObservation) RecoveryProfileV1 {
+	excluded := recoveryDataExclusions()
+	profile := RecoveryProfileV1{
+		Format: recoveryProfileFormat, Version: 1, CaptureStatus: "incomplete",
+		SourcePostgresMajor: observation.ServerMajor, SourceVersionNum: observation.ServerVersionNum, ClientVersion: "PostgreSQL 17.11",
+		SchemaDump:     recoveryDumpProfile{Key: schemaSQLKey, Mode: "schema-only", Schemas: []string{"public"}, Status: "incomplete"},
+		DataDump:       recoveryDumpProfile{Key: dataSQLKey, Mode: "data-only", Schemas: []string{"public", "auth", "storage"}, Status: "incomplete"},
+		ExcludedTables: make([]recoveryProfileTable, len(excluded)), Extensions: make([]recoveryProfileExtension, len(observation.Extensions)),
+		Roles:    recoveryCoverageProfile{Status: "missing", Reason: "custom roles and memberships are not captured"},
+		Snapshot: recoveryCoverageProfile{Status: "unqualified", Reason: "schema and data dumps use separate source sessions; a shared snapshot is not established"},
+		Unknowns: []string{
+			"Only public schema DDL is selected; additional application schemas are not inventoried or captured.",
+			"Pre-existing public schema ownership and database-wide DDL semantics are not qualified for restore.",
+			"Managed-schema customizations, extension DDL compatibility, publications, event triggers, and cross-database dependencies are not qualified.",
+			"Custom roles, memberships, object ownership, and login credentials are not captured.",
+			"Storage object bytes, Auth service behavior, project settings, and provider-managed services are outside this database-only capture.",
+		},
+	}
+	for index, table := range excluded {
+		profile.ExcludedTables[index] = recoveryProfileTable{Schema: table.Schema, Name: table.Name}
+	}
+	for index, extension := range observation.Extensions {
+		profile.Extensions[index] = recoveryProfileExtension{Name: extension.Name, Version: extension.Version, Schema: extension.Schema}
+	}
+	return profile
+}
+
+func recoveryDataExclusions() []tools.TableRef {
+	return []tools.TableRef{
+		{Schema: "auth", Name: "schema_migrations"},
+		{Schema: "storage", Name: "migrations"},
+		{Schema: "supabase_functions", Name: "migrations"},
+		{Schema: "storage", Name: "buckets_vectors"},
+		{Schema: "storage", Name: "vector_indexes"},
+	}
+}
+
+func validSplitCaptureManifest(manifest archive.Manifest) bool {
+	if manifest.Validate() != nil || len(manifest.Components) != 3 {
+		return false
+	}
+	want := [...]struct{ key, scope, status string }{
+		{schemaSQLKey, schemaSQLScope, "incomplete"},
+		{dataSQLKey, dataSQLScope, "incomplete"},
+		{recoveryProfileKey, recoveryProfileScope, "complete"},
+	}
+	for index, expected := range want {
+		component := manifest.Components[index]
+		if component.Key != expected.key || component.Scope != expected.scope || component.Length == 0 || component.Status != expected.status {
+			return false
+		}
+	}
+	return true
 }
 
 func defaultRecoveryOps() recoveryOps {

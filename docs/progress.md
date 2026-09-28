@@ -1641,7 +1641,36 @@ now use gzip BestSpeed so race tests exercise runner behavior without spending
 minutes compressing an executable; production/archive-format behavior is
 unchanged.
 
-**Still incomplete:** production split capture/profile, archive-derived
-fidelity checks, guarded production restore, custom roles and project services
-remain unimplemented. `./tmp/test` remains the legacy single custom-format
-component marked `incomplete`; no hosted connection or write was performed.
+**Still incomplete:** archive-derived fidelity checks, guarded production
+restore, custom roles and project services remain unimplemented. `./tmp/test`
+remains the legacy single custom-format component marked `incomplete`; no hosted
+connection or write was performed.
+
+### Task 4: versioned encrypted split capture (2026-09-28)
+
+The CLI backup now uses `CaptureSplit`; legacy `Capture` and the existing
+one-component `database/postgresql.dump` meaning remain unchanged for compatibility.
+Archive v1 contains encrypted `database/schema.sql`, `database/data.sql`, and
+`database/recovery-profile.json` components. The profile is version 1, records
+source PostgreSQL major/version number, bundled client version, extension
+inventory, exact dump modes/schema selectors/exclusions, missing custom roles,
+and unqualified snapshot consistency. The split is intentionally incomplete:
+DDL selects `public` only; data selects `public`, `auth`, and `storage`, excluding
+the three migration tables and two Storage vector tables. Source preflight also
+requires the selected Supabase schemas to exist. Each pg_dump stdout streams
+straight into the encrypted staging publisher; no plaintext dump is staged, and
+a failed second component publishes no archive.
+
+A disposable PG17.9 integration test confirmed the actual SQL output contains
+`public` DDL and eligible public/Auth/Storage rows, omits Auth/Storage DDL and
+fixed migration/vector row canaries, and includes an authenticated encrypted
+profile. It does not prove archive-time snapshot consistency or complete source
+fidelity. The profile explicitly records non-public schemas, public-schema
+ownership, managed customizations, custom roles, Storage bytes, and service
+behavior as missing or unqualified.
+
+Fresh checks passed: `go test ./... -count=1 -timeout=600s`,
+`go vet ./...`, focused `go test -race -p=1 ./internal/database -run '^TestCaptureSplit'`, the PG17.9 split-capture integration test, its focused race run, and the full tagged PostgreSQL client/database integration suite. No hosted
+connection or write was performed. The split profile is not yet accepted by
+internal `Restore` or the developer-only legacy restore path; public
+`sparc restore` remains unavailable.

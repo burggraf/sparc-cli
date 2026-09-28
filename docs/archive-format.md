@@ -85,8 +85,13 @@ compatibility remain unimplemented. A production payload inventory remains
 empty.
 
 The [R17 Supabase-aware database profile](research/R17-supabase-cli-dump-profile.md)
-proposes a separate, versioned encrypted `database/recovery-profile.json` payload
-inside the **existing** v1 container, which already supports multiple components.
-This profile and split capture are not implemented. Existing one-component
-`database/postgresql.dump` archives retain their original incomplete meaning;
-no manifest fields or decryption behavior have changed.
+uses a separate, versioned encrypted `database/recovery-profile.json` component
+inside the **existing** v1 container. New `sparc backup` captures contain
+`database/schema.sql`, `database/data.sql`, and that profile as three separately
+encrypted components; schema and data are marked `incomplete`, and the profile
+records explicit selection, exclusions, missing roles, and unqualified snapshot
+consistency. No container version or top-level manifest fields changed. Existing
+one-component `database/postgresql.dump` archives retain their original
+incomplete meaning. The current internal `Restore` still accepts only the legacy
+single dump, and public `sparc restore` remains unavailable; split capture is not
+yet a production recovery path.
