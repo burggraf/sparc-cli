@@ -243,7 +243,7 @@ func parseTOCEntry(line string) (tocEntry, *tocDescriptor, error) {
 		return tocEntry{}, nil, ErrArchive
 	}
 	fields, err := splitTOCFields(remainder)
-	if err != nil || len(fields) < 6 || !isOID(fields[0]) || !isOID(fields[1]) {
+	if err != nil || len(fields) < 5 || !isOID(fields[0]) || !isOID(fields[1]) {
 		return tocEntry{}, nil, ErrArchive
 	}
 	for i := range tocDescriptors {
@@ -253,14 +253,21 @@ func parseTOCEntry(line string) (tocEntry, *tocDescriptor, error) {
 			continue
 		}
 		namespaceIndex := 2 + len(name)
-		if len(fields) < namespaceIndex+3 {
+		if len(fields) < namespaceIndex+2 {
 			return tocEntry{}, nil, ErrArchive
 		}
 		namespace := fields[namespaceIndex]
-		if namespace == "" || strings.ContainsFunc(namespace, unicode.IsSpace) || fields[len(fields)-1] == "" {
+		if namespace == "" || strings.ContainsFunc(namespace, unicode.IsSpace) {
 			return tocEntry{}, nil, ErrArchive
 		}
-		tagFields := fields[namespaceIndex+1 : len(fields)-1]
+		tagEnd := len(fields)
+		if descriptor.kind != tocUnsupported {
+			if len(fields) < namespaceIndex+3 || fields[len(fields)-1] == "" {
+				return tocEntry{}, nil, ErrArchive
+			}
+			tagEnd-- // Supported descriptions have an owner token at line end.
+		}
+		tagFields := fields[namespaceIndex+1 : tagEnd]
 		if len(tagFields) == 0 || strings.Join(tagFields, "") == "" {
 			return tocEntry{}, nil, ErrArchive
 		}
@@ -292,7 +299,9 @@ func splitTOCFields(input string) ([]string, error) {
 				continue
 			}
 			if !quoted && started {
-				return nil, ErrArchive
+				field.WriteByte('"') // Display text may quote part of a signature token.
+				i += size
+				continue
 			}
 			quoted = !quoted
 			started = true

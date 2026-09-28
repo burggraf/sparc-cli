@@ -24,7 +24,7 @@ func TestSelectArchiveTOCSeparatesApplicationDDLFromEligibleData(t *testing.T) {
 13; 0 109 TABLE DATA storage migrations supabase_admin
 14; 0 110 TABLE DATA storage buckets_vectors supabase_admin
 15; 0 111 TABLE DATA storage vector_indexes supabase_admin
-16; 3079 112 EXTENSION - pgcrypto postgres
+16; 3079 112 EXTENSION - pgcrypto
 `
 	plan, err := selectArchiveTOC([]byte(input))
 	if err != nil {
@@ -81,6 +81,16 @@ func TestSelectArchiveTOCRejectsMalformedOrAmbiguousEntries(t *testing.T) {
 		if _, err := selectArchiveTOC([]byte(input)); err == nil {
 			t.Errorf("selectArchiveTOC() accepted malformed TOC %q", input)
 		}
+	}
+}
+
+func TestSelectArchiveTOCHandlesQuotesInsideDisplayTokens(t *testing.T) {
+	plan, err := selectArchiveTOC([]byte("1; 0 1 ACL public FUNCTION f(\"char\") postgres\n"))
+	if err != nil {
+		t.Fatalf("selectArchiveTOC() error = %v", err)
+	}
+	if plan.Blocked() || !reflect.DeepEqual(plan.schemaIDs, []uint32{1}) {
+		t.Fatalf("quoted signature token was not classified: %#v", plan)
 	}
 }
 
